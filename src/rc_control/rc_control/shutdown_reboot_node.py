@@ -1,52 +1,84 @@
+#!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-from px4_msgs.msg import InputRc
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from px4_msgs.msg import InputRc
 import subprocess
 
 class ShutdownRebootNode(Node):
     def __init__(self):
         super().__init__('shutdown_reboot_node')
 
-        # QoS settings for the subscriber
-        qos_profile = QoSProfile(
+        # QoS: best effort, keep last
+        qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
             depth=10
         )
 
-        self.subscription = self.create_subscription(
+        # Subscribe to PX4's input_rc topic
+        topic_name = '/fmu/out/input_rc'
+        self.create_subscription(
             InputRc,
-            '/fmu/out/input_rc',
-            self.listener_callback,
-            qos_profile
+            topic_name,
+            self.cb_rc,
+            qos
         )
+        self.get_logger().info(f'Subscribed to {topic_name}')
 
-    def listener_callback(self, msg):
-        print("Callback triggered - RC input received.")
+        # State for hold detection
+        self.shutdown_start = None
+        self.reboot_start = None
 
-        # Print all channels, counting from 1 instead of 0
-        for index, value in enumerate(msg.values, start=1):
-            print(f"Channel {index}: {value}")
+        # Flags to ensure one-shot
+        self.did_shutdown = False
+        self.did_reboot = False
 
-        # Check channel 7 value
-        channel_7_value = msg.values[6]  # Channel 7 is index 6 in 0-indexed arrays
-        print(f"Channel 7 value is: {channel_7_value}")
+        # Midpoint and tolerance
+        self.MID = 1024
+        self.TOL = 15  # tolerance
+        # Required hold time (seconds)
+        self.HOLD_TIME = 1.0
 
-        # Directly execute shutdown or reboot based on channel 7 value
-        if channel_7_value == 2003:
-            print("System will shut down now...")
-            try:
-                subprocess.run(['sudo', '/sbin/shutdown', 'now'], check=True)
-            except subprocess.CalledProcessError as e:
-                print(f"Error during shutdown: {e}")
-        
-        elif channel_7_value == 1514:
-            print("System will reboot now...")
-            try:
-                subprocess.run(['sudo', '/sbin/reboot'], check=True)
-            except subprocess.CalledProcessError as e:
-                print(f"Error during reboot: {e}")
+        self.get_logger().info('Shutdown/Reboot node ready (hold sticks to trigger)')
+
+    def cb_rc(self, msg: InputRc):
+        vals = msg.values
+        # Ensure 10 channels
+        if len(vals) < 10:
+            return
+
+        ch9, ch10 = vals[8], vals[9]
+        mid9 = abs(ch9 - self.MID) <= self.TOL
+        mid10 = abs(ch10 - self.MID) <= self.TOL
+
+        now = self.get_clock().now().nanoseconds * 1e-9
+
+        # Shutdown: both mid held
+        if mid9 and mid10 and not self.did_shutdown:
+            if self.shutdown_start is None:
+                self.shutdown_start = now
+                self.get_logger().info('Shutdown sequence armed; hold both sticks at mid')
+            elif (now - self.shutdown_start) >= self.HOLD_TIME:
+                self.get_logger().warn('Held both sticks → SHUTDOWN')
+                subprocess.Popen(['sudo', '/sbin/shutdown', '-h', 'now'])
+                self.did_shutdown = True
+        else:
+            # reset if sticks moved
+            self.shutdown_start = None
+
+        # Reboot: only channel 10 mid held
+        if mid10 and not mid9 and not self.did_reboot:
+            if self.reboot_start is None:
+                self.reboot_start = now
+                self.get_logger().info('Reboot sequence armed; hold channel 10 at mid')
+            elif (now - self.reboot_start) >= self.HOLD_TIME:
+                self.get_logger().warn('Held stick 10 → REBOOT')
+                subprocess.Popen(['sudo', '/sbin/reboot'])
+                self.did_reboot = True
+        else:
+            self.reboot_start = None
+
 
 def main(args=None):
     rclpy.init(args=args)

@@ -21,6 +21,7 @@ setup(
     entry_points={
         'console_scripts': [
             'camera_sw_node = rc_control.camera_sw_node:main',
+            'shutdown_reboot_node = rc_control.shutdown_reboot_node:main',
         ],
     },
 )

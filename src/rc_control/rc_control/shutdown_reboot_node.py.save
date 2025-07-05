@@ -1,0 +1,187 @@
+import rclpy
+from rclpy.node import Node
+from px4_msgs.msg import InputRc
+import rclpy
+from rclpy.node import Node
+from px4_msgs.msg import InputRc
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+import subprocess
+
+class ShutdownRebootNode(Node):
+    def __init__(self):
+        super().__init__('shutdown_reboot_node')
+
+        # QoS for best-effort, keep-last history
+        qos_profile = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
+        )
+
+        # edge flags so we only fire once per stick action
+        self.shutdown_triggered = False
+        self.reboot_triggered   = False
+
+        # subscribe to the PX4 input_rc topic
+        self.create_subscription(
+            InputRc,
+            'input_rc',
+            self.rc_callback,
+            qos_profile)
+
+        self.get_logger().info('Shutdown/Reboot node ready (watching RC chans 9 & 10)')
+
+    def rc_callback(self, msg: InputRc):
+        vals = msg.values
+        if len(vals) < 10:
+            return  # not enough channels
+
+        ch9  = vals[8]
+        ch10 = vals[9]
+        thresh = 1024
+
+        # both sticks high → shutdown
+        if ch9 == thresh and ch10 == thresh and not self.shutdown_triggered:
+            self.get_logger().warn(
+                f'RC chan 9 & 10 both at {thresh}: issuing shutdown')
+            subprocess.Popen(['sudo', '/sbin/shutdown', '-h', 'now'])
+            self.shutdown_triggered = True
+
+        # only stick 10 high → reboot
+        elif ch10 == thresh and not self.reboot_triggered:
+            self.get_logger().warn(
+                f'RC chan 10 at {thresh}: issuing reboot')
+            subprocess.Popen(['sudo', '/sbin/reboot'])
+            self.reboot_triggered = True
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = ShutdownRebootNode()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
+import rclpy
+from rclpy.node import Node
+from px4_msgs.msg import InputRc
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+import subprocess
+
+class ShutdownRebootNode(Node):
+    def __init__(self):
+        super().__init__('shutdown_reboot_node')
+
+        # QoS for best-effort, keep-last history
+        qos_profile = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
+        )
+
+        # edge flags so we only fire once per stick action
+        self.shutdown_triggered = False
+        self.reboot_triggered   = False
+
+        # subscribe to the PX4 input_rc topic
+        self.create_subscription(
+            InputRc,
+            'input_rc',
+            self.rc_callback,
+            qos_profile)
+
+        self.get_logger().info('Shutdown/Reboot node ready (watching RC chans 9 & 10)')
+
+    def rc_callback(self, msg: InputRc):
+        vals = msg.values
+        if len(vals) < 10:
+            return  # not enough channels
+
+        ch9  = vals[8]
+        ch10 = vals[9]
+        thresh = 1024
+
+        # both sticks high → shutdown
+        if ch9 == thresh and ch10 == thresh and not self.shutdown_triggered:
+            self.get_logger().warn(
+                f'RC chan 9 & 10 both at {thresh}: issuing shutdown')
+            subprocess.Popen(['sudo', '/sbin/shutdown', '-h', 'now'])
+            self.shutdown_triggered = True
+
+        # only stick 10 high → reboot
+        elif ch10 == thresh and not self.reboot_triggered:
+            self.get_logger().warn(
+                f'RC chan 10 at {thresh}: issuing reboot')
+            subprocess.Popen(['sudo', '/sbin/reboot'])
+            self.reboot_triggered = True
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = ShutdownRebootNode()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+import subprocess
+
+class ShutdownRebootNode(Node):
+    def __init__(self):
+        super().__init__('shutdown_reboot_node')
+
+        # QoS settings for the subscriber
+        qos_profile = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
+        )
+
+        self.subscription = self.create_subscription(
+            InputRc,
+            '/fmu/out/input_rc',
+            self.listener_callback,
+            qos_profile
+        )
+
+    def listener_callback(self, msg):
+        print("Callback triggered - RC input received.")
+
+        # Print all channels, counting from 1 instead of 0
+        for index, value in enumerate(msg.values, start=1):
+            print(f"Channel {index}: {value}")
+
+        # Check channel 7 value
+        channel_7_value = msg.values[6]  # Channel 7 is index 6 in 0-indexed arrays
+        print(f"Channel 7 value is: {channel_7_value}")
+
+        # Directly execute shutdown or reboot based on channel 7 value
+        if channel_7_value == 2003:
+            print("System will shut down now...")
+            try:
+                subprocess.run(['sudo', '/sbin/shutdown', 'now'], check=True)
+            except subprocess.CalledProcessError as e:
+                print(f"Error during shutdown: {e}")
+        
+        elif channel_7_value == 1514:
+            print("System will reboot now...")
+            try:
+                subprocess.run(['sudo', '/sbin/reboot'], check=True)
+            except subprocess.CalledProcessError as e:
+                print(f"Error during reboot: {e}")
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = ShutdownRebootNode()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()
