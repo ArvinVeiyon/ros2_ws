@@ -1,11 +1,11 @@
 # config/rc_mapping.yaml
 
 rc_values:
-  timestamp: 1753512607601349
+  timestamp: 1753521427055026
   values:
   - 1514
   - 1514
-  - 1964
+  - 1019
   - 1514
   - 1012
   - 1012
@@ -44,7 +44,7 @@ rc_channels:
 nodes:
   camera_node_sw:
     ros__parameters:
-      channel_index: 11
+      channel_index: 9
       tolerance: 50
       hold_time: 1.0
       rc_map:
@@ -57,7 +57,7 @@ nodes:
 
   shutdown_reboot_node:
     ros__parameters:
-      channel_index: 3
+      channel_index: 10
       tolerance: 100
       hold_time: 2.0
       rc_map:
