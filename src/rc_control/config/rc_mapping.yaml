@@ -1,0 +1,65 @@
+# config/rc_mapping.yaml
+
+rc_values:
+  timestamp: 1753512607601349
+  values:
+  - 1514
+  - 1514
+  - 1964
+  - 1514
+  - 1012
+  - 1012
+  - 1012
+  - 1012
+  - 1012
+  - 1012
+  - 1012
+  - 1012
+  - 1514
+  - 1511
+  - 1514
+  - 1514
+  - 998
+  - 998
+rc_channels:
+  '0': {pos1: 1514, pos2: 1514, pos3: 1514}
+  '1': {pos1: 1514, pos2: 1514, pos3: 1514}
+  '2': {pos1: 1768, pos2: 1768, pos3: 1767}
+  '3': {pos1: 1514, pos2: 1514, pos3: 1514}
+  '4': {pos1: 1012, pos2: 2014, pos3: null}
+  '5': {pos1: 1012, pos2: 1514, pos3: 2014}
+  '6': {pos1: 1012, pos2: 1514, pos3: 2014}
+  '7': {pos1: 1012, pos2: 1514, pos3: 2014}
+  '8': {pos1: 1012, pos2: 1514, pos3: 2014}
+  '9': {pos1: 1012, pos2: 1514, pos3: 2014}
+  '10': {pos1: 1012, pos2: 1514, pos3: 2014}
+  '11': {pos1: 1012, pos2: 2014, pos3: null}
+  '12': {pos1: 1514, pos2: null, pos3: null}
+  '13': {pos1: 1511, pos2: null, pos3: null}
+  '14': {pos1: 1514, pos2: null, pos3: null}
+  '15': {pos1: 1514, pos2: null, pos3: null}
+  '16': {pos1: 998, pos2: null, pos3: null}
+  '17': {pos1: 998, pos2: null, pos3: null}
+
+nodes:
+  camera_node_sw:
+    ros__parameters:
+      channel_index: 11
+      tolerance: 50
+      hold_time: 1.0
+      rc_map:
+        front: 1012
+        bottom: 1514
+        split: 2014
+      cameras:
+        front: /dev/video0
+        bottom: /dev/video2
+
+  shutdown_reboot_node:
+    ros__parameters:
+      channel_index: 3
+      tolerance: 100
+      hold_time: 2.0
+      rc_map:
+        shutdown: 1514
+        reboot: 2014

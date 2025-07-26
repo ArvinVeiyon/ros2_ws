@@ -15,7 +15,9 @@ public:
       _manual_input(std::make_shared<px4_ros2::ManualControlInput>(*this)),
       _rates_setpoint(std::make_shared<px4_ros2::RatesSetpointType>(*this))
   {
-    // Subscribe to TFmini distance sensor on /fmu/in/distance_sensor
+  // disable the built-in PX4 <-> ROS2 msg version check
+      setSkipMessageCompatibilityCheck();
+  // Subscribe to TFmini distance sensor on /fmu/in/distance_sensor
     _node.create_subscription<px4_msgs::msg::DistanceSensor>(
       "/fmu/in/distance_sensor", 10,
       [this](px4_msgs::msg::DistanceSensor::UniquePtr msg) {
