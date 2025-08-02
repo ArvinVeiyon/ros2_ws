@@ -1,0 +1,11 @@
+# config/camera_sw_params.yaml
+ros__parameters:
+  channel_index: 7
+  tolerance:     50
+  rc_map:
+    front:  1012
+    bottom: 1514
+    split:  2014
+  cameras:
+    front:  "/dev/video0"
+    bottom: "/dev/video2"
