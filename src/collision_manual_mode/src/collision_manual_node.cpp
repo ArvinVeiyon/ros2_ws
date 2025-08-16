@@ -1,80 +1,106 @@
+// File: collision_manual_mode.cpp
+
 #include <rclcpp/rclcpp.hpp>
-#include <px4_msgs/msg/distance_sensor.hpp>
+#include <px4_msgs/msg/manual_control_setpoint.hpp>
+#include <px4_msgs/msg/vehicle_command.hpp>
+#include <termios.h>
+#include <unistd.h>
 
-// PX4-ROS2 Interface Library components
-#include <px4_ros2/components/mode.hpp>                    // ModeBase
-#include <px4_ros2/components/manual_control_input.hpp>    // ManualControlInput
-#include <px4_ros2/control/setpoint_types/experimental/rates.hpp>  // RatesSetpointType
+using namespace std::chrono_literals;
 
-class CollisionManualMode : public px4_ros2::ModeBase {
+// Non-blocking keyboard read
+static int getch_nonblocking() {
+  termios oldt, newt;
+  tcgetattr(STDIN_FILENO, &oldt);
+  newt = oldt;
+  newt.c_lflag &= ~(ICANON | ECHO);
+  tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+  int ch = -1;
+  if (read(STDIN_FILENO, &ch, 1) < 0) {
+    ch = -1;
+  }
+  tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+  return ch;
+}
+
+class KeyboardManualControl : public rclcpp::Node {
 public:
-  // Store a reference to the ROS node for logging
-  explicit CollisionManualMode(rclcpp::Node &node)
-    : ModeBase(node, Settings{"Collision Manual Mode"}),
-      _node(node),
-      _manual_input(std::make_shared<px4_ros2::ManualControlInput>(*this)),
-      _rates_setpoint(std::make_shared<px4_ros2::RatesSetpointType>(*this))
+  KeyboardManualControl()
+  : Node("keyboard_manual_control"), throttle_(0.0f)
   {
-  // disable the built-in PX4 <-> ROS2 msg version check
-      setSkipMessageCompatibilityCheck();
-  // Subscribe to TFmini distance sensor on /fmu/in/distance_sensor
-    _node.create_subscription<px4_msgs::msg::DistanceSensor>(
-      "/fmu/in/distance_sensor", 10,
-      [this](px4_msgs::msg::DistanceSensor::UniquePtr msg) {
-        _latest_distance = msg->current_distance;
-      });
+    // Publisher for manual stick input
+    stick_pub_ = create_publisher<px4_msgs::msg::ManualControlSetpoint>(
+      "/fmu/in/manual_control_input", rclcpp::SensorDataQoS());
+    // Publisher for arm/disarm command
+    cmd_pub_ = create_publisher<px4_msgs::msg::VehicleCommand>(
+      "/fmu/in/vehicle_command", rclcpp::SensorDataQoS());
 
-    RCLCPP_INFO(_node.get_logger(), "CollisionManualMode initialized");
-  }
+    timer_ = create_wall_timer(100ms, std::bind(&KeyboardManualControl::on_timer, this));
 
-  void onActivate() override {
-    RCLCPP_INFO(_node.get_logger(), "Collision Manual Mode Activated");
-  }
-
-  void onDeactivate() override {
-    RCLCPP_INFO(_node.get_logger(), "Collision Manual Mode Deactivated");
-  }
-
-  // Must exactly match ModeBase signature
-  void updateSetpoint(float /*dt_s*/) override {
-    // PX4 throttle() is negative‐downwards
-    float thrust = -_manual_input->throttle();
-    Eigen::Vector3f rates{
-      _manual_input->roll()   * 150.0f * static_cast<float>(M_PI) / 180.0f,
-      -_manual_input->pitch() * 150.0f * static_cast<float>(M_PI) / 180.0f,
-      _manual_input->yaw()    * 100.0f * static_cast<float>(M_PI) / 180.0f
-    };
-
-    // Block forward thrust if obstacle closer than 0.2 m
-    if (_latest_distance > 0.0f && _latest_distance < 0.2f) {
-      RCLCPP_WARN(
-        _node.get_logger(),
-        "Obstacle at %.2f m — blocking thrust",
-        _latest_distance);
-      thrust = 0.0f;
-    }
-
-    // Publish rates + thrust setpoint
-    _rates_setpoint->update(rates, Eigen::Vector3f{0.0f, 0.0f, thrust});
+    RCLCPP_INFO(get_logger(),
+      "Keyboard control: 'w'/'s'=throttle up/down, 'a'/'d'=yaw, 'z'=ARM, 'x'=DISARM, 'q'=quit");
   }
 
 private:
-  rclcpp::Node &_node;
-  std::shared_ptr<px4_ros2::ManualControlInput> _manual_input;
-  std::shared_ptr<px4_ros2::RatesSetpointType>  _rates_setpoint;
-  float _latest_distance{-1.0f};
+  void on_timer() {
+    int c = getch_nonblocking();
+    float yaw = 0.0f;
+
+    // Throttle control
+    if (c == 'w' || c == 'W') throttle_ = std::min(throttle_ + 0.1f, 1.0f);
+    if (c == 's' || c == 'S') throttle_ = std::max(throttle_ - 0.1f, 0.0f);
+    // Yaw control
+    if (c == 'a' || c == 'A') yaw = -0.5f;
+    if (c == 'd' || c == 'D') yaw = 0.5f;
+    // Arm/Disarm
+    if (c == 'z' || c == 'Z') send_arm(true);
+    if (c == 'x' || c == 'X') send_arm(false);
+    // Quit
+    if (c == 'q' || c == 'Q') rclcpp::shutdown();
+
+    // Publish stick setpoint if any control key
+    if (c != -1) {
+      px4_msgs::msg::ManualControlSetpoint msg;
+      msg.timestamp = now().nanoseconds() / 1000;
+      msg.timestamp_sample = msg.timestamp;
+      msg.valid = true;
+      msg.data_source = px4_msgs::msg::ManualControlSetpoint::SOURCE_RC;
+      msg.roll = 0.0f;
+      msg.pitch = 0.0f;
+      msg.yaw = yaw;
+      msg.throttle = throttle_;
+      msg.flaps = 0.0f;
+      msg.aux1 = msg.aux2 = msg.aux3 = msg.aux4 = msg.aux5 = msg.aux6 = 0.0f;
+      msg.sticks_moving = (yaw != 0.0f || throttle_ > 0.0f);
+      msg.buttons = 0;
+
+      stick_pub_->publish(msg);
+    }
+  }
+
+  void send_arm(bool arm) {
+    px4_msgs::msg::VehicleCommand cmd;
+    cmd.timestamp        = now().nanoseconds() / 1000;
+    cmd.param1           = arm ? 1.0f : 0.0f;
+    cmd.command          = px4_msgs::msg::VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM;
+    cmd.target_system    = 1;
+    cmd.target_component = 1;
+    cmd.source_system    = 1;
+    cmd.source_component = 1;
+    cmd.from_external    = true;
+    cmd_pub_->publish(cmd);
+    RCLCPP_INFO(get_logger(), "%s command sent", arm ? "ARM" : "DISARM");
+  }
+
+  rclcpp::Publisher<px4_msgs::msg::ManualControlSetpoint>::SharedPtr stick_pub_;
+  rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr       cmd_pub_;
+  rclcpp::TimerBase::SharedPtr timer_;
+  float throttle_;
 };
 
 int main(int argc, char **argv) {
   rclcpp::init(argc, argv);
-  auto node = std::make_shared<rclcpp::Node>("collision_manual_mode");
-  auto mode = std::make_shared<CollisionManualMode>(*node);
-
-  if (!mode->doRegister()) {
-    RCLCPP_ERROR(node->get_logger(), "CollisionManualMode registration failed");
-    return 1;
-  }
-
+  auto node = std::make_shared<KeyboardManualControl>();
   rclcpp::spin(node);
   rclcpp::shutdown();
   return 0;
