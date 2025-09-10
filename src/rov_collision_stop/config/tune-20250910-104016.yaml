@@ -1,0 +1,32 @@
+/rov_collision_stop:
+  ros__parameters:
+    accel_limit_per_s: 0.0
+    brake_pulse_enable: true
+    brake_pulse_level: 0.99
+    brake_pulse_level_close: 0.99
+    brake_pulse_ms: 3000
+    brake_pulse_ms_close: 2000
+    clear_threshold_m: 0.7
+    control_hz: 100
+    decel_limit_per_s: 0.0
+    enabled: true
+    hard_stop_m: 0.4
+    pre_brake_cooldown_ms: 100
+    pre_brake_enable: true
+    pre_brake_level: 0.9
+    pre_brake_ms: 1000
+    qos_overrides:
+      /parameter_events:
+        publisher:
+          depth: 1000
+          durability: volatile
+          history: keep_last
+          reliability: reliable
+    reverse_bypass_slew: true
+    slow_zone_m: 1.0
+    start_type_description_service: true
+    stop_threshold_m: 0.6
+    tfmini_timeout_ms: 0
+    use_sim_time: false
+    zero_cross_snap: true
+

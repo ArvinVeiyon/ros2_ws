@@ -12,6 +12,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(px4_msgs REQUIRED)
+find_package(std_msgs REQUIRED)   # <--- add this
 
 include_directories(include)
 
@@ -22,6 +23,7 @@ add_executable(rov_collision_stop
 ament_target_dependencies(rov_collision_stop
   rclcpp
   px4_msgs
+  std_msgs                 # <--- add this
 )
 
 install(TARGETS
