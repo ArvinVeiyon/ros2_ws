@@ -1,6 +1,7 @@
 #pragma once
 /****************************************************************************
  * rov_collision_stop — Pre-brake in slow zone + hard stop very close
+ * (with integrated "coast" collision: stick ~0 & closing fast → same brake + hold)
  *
  * INPUTS:
  *  - /fmu/out/manual_control_setpoint (px4_msgs/ManualControlSetpoint)
@@ -10,21 +11,6 @@
  *  - /fmu/in/rover_throttle_setpoint  (px4_msgs/RoverThrottleSetpoint)
  *  - /fmu/in/rover_steering_setpoint  (px4_msgs/RoverSteeringSetpoint)
  *  - /rov/distance_m                  (std_msgs/Float32) debug distance (m)
- *
- * Behavior:
- *  - Reverse ALWAYS allowed (instant; optional zero-cross snap).
- *  - Forward passes unless blocked (< stop_threshold_m), with clear hysteresis.
- *  - PRE-BRAKE: on first entry into slow zone [stop .. slow_zone), send a small
- *    reverse pulse (once), then allow forward again.
- *  - HARD STOP: inside very_close band (< hard_stop_m), send a stronger reverse
- *    pulse, then hold 0 until clear.
- *
- * Minimal defaults (safe indoors):
- *  - stop_threshold_m=0.30, clear_threshold_m=0.45
- *  - slow_zone_m=0.80, hard_stop_m=0.20
- *  - pre_brake: level=0.10 (10%), ms=120, cooldown=400
- *  - hard stop pulse: level=0.22 (22%), ms=250
- *  - control_hz=100, slew OFF (crisp)
  ****************************************************************************/
 
 #include <rclcpp/rclcpp.hpp>
@@ -48,22 +34,18 @@ class CollisionStopNode : public rclcpp::Node
 public:
   CollisionStopNode() : Node("rov_collision_stop")
   {
-    // --- Parameters ---
+    // --- Parameters (your working defaults) ---
     enabled_            = declare_parameter<bool>("enabled", true);
 
     stop_threshold_m_   = declare_parameter<double>("stop_threshold_m", 0.30);
     clear_threshold_m_  = declare_parameter<double>("clear_threshold_m", 0.45);
-
-    // Slow zone entry point (> stop, < slow_zone)
     slow_zone_m_        = declare_parameter<double>("slow_zone_m", 0.80);
-
-    // Very-close hard-stop band (< hard_stop)
     hard_stop_m_        = declare_parameter<double>("hard_stop_m", 0.20);
 
     control_hz_         = std::max<int>(10, declare_parameter<int>("control_hz", 100));
     tfmini_timeout_ms_  = std::max<int>(0, declare_parameter<int>("tfmini_timeout_ms", 0)); // 0=disabled
 
-    // Slew (defaults OFF for crisp)
+    // Slew (defaults OFF for crisp DC behavior)
     accel_limit_per_s_  = std::max<double>(0.0, declare_parameter<double>("accel_limit_per_s", 0.0));
     decel_limit_per_s_  = std::max<double>(0.0, declare_parameter<double>("decel_limit_per_s", 0.0));
     reverse_bypass_slew_= declare_parameter<bool>("reverse_bypass_slew", true);
@@ -151,49 +133,29 @@ public:
     openTfmini("/dev/ttyAMA2", B115200);
 
     RCLCPP_INFO(get_logger(),
-      "started (stop=%.2fm clear=%.2fm slow=%.2fm hard=%.2fm, pre_brake=%s L=%.2f %dms cd=%dms, "
-      "block_pulse=%s L=%.2f %dms close L=%.2f %dms, ctrl=%dHz)",
-      stop_threshold_m_, clear_threshold_m_, slow_zone_m_, hard_stop_m_,
-      pre_brake_enable_ ? "on":"off", pre_brake_level_, pre_brake_ms_, pre_brake_cooldown_ms_,
-      brake_pulse_enable_ ? "on":"off", brake_pulse_level_, brake_pulse_ms_,
-      brake_pulse_level_close_, brake_pulse_ms_close_, control_hz_);
+      "started (stop=%.2fm clear=%.2fm slow=%.2fm hard=%.2fm)",
+      stop_threshold_m_, clear_threshold_m_, slow_zone_m_, hard_stop_m_);
   }
 
   ~CollisionStopNode() override { if (tf_fd_ >= 0) ::close(tf_fd_); }
 
 private:
+  // -------- Coast detection constants (compile-time; no new ROS params) --------
+  static constexpr double kNeutralDeadband   = 0.06; // stick ~ 0
+  static constexpr double kCoastTriggerMps   = 0.06; // smaller = more sensitive (was 0.15)
+  static constexpr double kCoastWatchMarginM = 0.30; // start watching earlier than slow_zone_m
+
   // --- UART helpers ---
   void openTfmini(const char* dev, speed_t baud)
   {
     tf_fd_ = ::open(dev, O_RDWR | O_NOCTTY | O_NONBLOCK);
-    if (tf_fd_ < 0) {
-      RCLCPP_ERROR(get_logger(), "TFmini: open %s failed", dev);
-      tf_fd_ok_ = false;
-      return;
-    }
+    if (tf_fd_ < 0) { RCLCPP_ERROR(get_logger(), "TFmini: open %s failed", dev); tf_fd_ok_ = false; return; }
     struct termios tty{};
-    if (tcgetattr(tf_fd_, &tty) != 0) {
-      RCLCPP_ERROR(get_logger(), "TFmini: tcgetattr failed");
-      ::close(tf_fd_);
-      tf_fd_ = -1;
-      tf_fd_ok_ = false;
-      return;
-    }
-    cfmakeraw(&tty);
-    cfsetispeed(&tty, baud);
-    cfsetospeed(&tty, baud);
-    tty.c_cflag |= (CLOCAL | CREAD);
-    tty.c_cc[VMIN]  = 0;
-    tty.c_cc[VTIME] = 0;
-    if (tcsetattr(tf_fd_, TCSANOW, &tty) != 0) {
-      RCLCPP_ERROR(get_logger(), "TFmini: tcsetattr failed");
-      ::close(tf_fd_);
-      tf_fd_ = -1;
-      tf_fd_ok_ = false;
-      return;
-    }
-    tf_fd_ok_ = true;
-    RCLCPP_INFO(get_logger(), "TFmini: %s @115200 opened", dev);
+    if (tcgetattr(tf_fd_, &tty) != 0) { RCLCPP_ERROR(get_logger(), "TFmini: tcgetattr failed"); ::close(tf_fd_); tf_fd_=-1; tf_fd_ok_=false; return; }
+    cfmakeraw(&tty); cfsetispeed(&tty, baud); cfsetospeed(&tty, baud);
+    tty.c_cflag |= (CLOCAL | CREAD); tty.c_cc[VMIN]=0; tty.c_cc[VTIME]=0;
+    if (tcsetattr(tf_fd_, TCSANOW, &tty) != 0) { RCLCPP_ERROR(get_logger(), "TFmini: tcsetattr failed"); ::close(tf_fd_); tf_fd_=-1; tf_fd_ok_=false; return; }
+    tf_fd_ok_ = true; RCLCPP_INFO(get_logger(), "TFmini: %s @115200 opened", dev);
   }
 
   void readTfmini()
@@ -201,44 +163,42 @@ private:
     if (!tf_fd_ok_) return;
 
     int avail = 0;
-    if (ioctl(tf_fd_, FIONREAD, &avail) != 0) {
-      avail = 0;
-    }
-    if (avail <= 0) {
-      return;
-    }
-    if (avail > 128) {
-      avail = 128;
-    }
+    if (ioctl(tf_fd_, FIONREAD, &avail) != 0) { avail = 0; }
+    if (avail <= 0) { return; }
+    if (avail > 128) { avail = 128; } // avoid -Wmisleading-indentation by splitting ifs
 
     uint8_t buf[128];
     int n = ::read(tf_fd_, buf, avail);
     if (n <= 0) return;
 
     for (int i = 0; i < n; ++i) {
-      // Shift buffer (size FRAME_LEN=9), append new byte
       std::memmove(frame_buf_, frame_buf_ + 1, FRAME_LEN - 1);
       frame_buf_[FRAME_LEN - 1] = buf[i];
 
-      // Look for TFmini frame header 0x59 0x59
+      // TFmini 9-byte frame, header 0x59 0x59
       if (frame_buf_[0] == 0x59 && frame_buf_[1] == 0x59) {
-        uint16_t sum = 0;
-        for (int k = 0; k < 8; ++k) {
-          sum += frame_buf_[k];
-        }
-        if ((sum & 0xFF) != frame_buf_[8]) {
-          continue;
-        }
+        uint16_t sum=0; for (int k=0;k<8;++k) sum += frame_buf_[k];
+        if ((sum & 0xFF) != frame_buf_[8]) continue;
 
-        uint16_t dist_cm = static_cast<uint16_t>(frame_buf_[2]) |
-                           (static_cast<uint16_t>(frame_buf_[3]) << 8);
-        const double dist_m = static_cast<double>(dist_cm) / 100.0;
+        uint16_t dist_cm = uint16_t(frame_buf_[2]) | (uint16_t(frame_buf_[3])<<8);
+        const double dist_m = double(dist_cm) / 100.0;
 
         const rclcpp::Time tnow = now();
-        last_distance_m_  = dist_m;
-        last_distance_ts_ = tnow;
 
-        // Update zones with hysteresis & rising edges
+        // Compute approach rate (+ve means getting closer)
+        double approach_mps = 0.0;
+        if (last_distance_ts_.nanoseconds() > 0) {
+          const double dt = (tnow - last_distance_ts_).nanoseconds() / 1e9;
+          if (dt > 1e-4) approach_mps = (last_distance_m_ - dist_m) / dt;
+        }
+
+        // Update distance & timestamps
+        last_distance_prev_m_  = last_distance_m_;
+        last_distance_prev_ts_ = last_distance_ts_;
+        last_distance_m_       = dist_m;
+        last_distance_ts_      = tnow;
+
+        // --- Zones/state with hysteresis (UNCHANGED behavior) ---
         const bool was_blocked   = obstacle_blocked_;
         const bool was_slow      = in_slow_zone_;
         const bool was_veryclose = very_close_;
@@ -246,43 +206,52 @@ private:
         // Blocked if < stop; clear if >= clear
         if (last_distance_m_ > 0.02 && last_distance_m_ < stop_threshold_m_) {
           obstacle_blocked_ = true;
+          if (!was_blocked) last_block_ts_ = tnow;
         } else if (last_distance_m_ >= clear_threshold_m_) {
           obstacle_blocked_ = false;
-        }
-        if (obstacle_blocked_ && !was_blocked) {
-          last_block_ts_ = tnow;
-        }
-        if (!obstacle_blocked_ && was_blocked) {
-          last_clear_ts_ = tnow;
+          if (was_blocked)  last_clear_ts_ = tnow;
         }
 
         // Slow zone (between stop and slow)
         in_slow_zone_ = (last_distance_m_ >= stop_threshold_m_ && last_distance_m_ < slow_zone_m_);
-        if (in_slow_zone_ && !was_slow) {
-          last_slow_entry_ts_ = tnow;
-          slow_pulsed_ = false;
-        }
-        if (!in_slow_zone_ && was_slow) {
-          last_slow_exit_ts_  = tnow;
-          slow_pulsed_ = false;
-        }
+        if (in_slow_zone_ && !was_slow) { last_slow_entry_ts_ = tnow; slow_pulsed_ = false; }
+        if (!in_slow_zone_ && was_slow) { last_slow_exit_ts_  = tnow; slow_pulsed_ = false; }
 
         // Very close
         very_close_ = (last_distance_m_ > 0.02 && last_distance_m_ < hard_stop_m_);
-        if (very_close_ && !was_veryclose) {
-          last_close_ts_ = tnow;
+        if (very_close_ && !was_veryclose) last_close_ts_ = tnow;
+
+        // --- Integrated "coast" collision (earlier + more sensitive) ---
+        // If stick ~0 and closing fast AND we're within (slow_zone + margin), treat as blocked-hold.
+        if (!obstacle_blocked_ && !very_close_) {
+          const bool stick_neutral = std::abs(last_manual_.throttle) <= static_cast<float>(kNeutralDeadband);
+          const bool closing_fast  = (approach_mps > kCoastTriggerMps);
+          const bool in_watch_dist = (last_distance_m_ <= (slow_zone_m_ + kCoastWatchMarginM));
+          if (stick_neutral && closing_fast && in_watch_dist) {
+            if (!coast_hold_) {
+              coast_hold_ = true;
+              coast_pulse_active_ = true;
+              last_coast_ts_ = tnow;
+            }
+          }
+        }
+        // Release coast hold when we back out beyond clear (same as blocked clear)
+        if (coast_hold_ && last_distance_m_ >= clear_threshold_m_) {
+          coast_hold_ = false;
+          coast_pulse_active_ = false;
+          last_coast_ts_ = rclcpp::Time{};
         }
 
-        // Debug
+        // Debug distance
         if (dist_debug_pub_) {
           std_msgs::msg::Float32 dbg;
           dbg.data = static_cast<float>(last_distance_m_);
           dist_debug_pub_->publish(dbg);
         }
-        RCLCPP_INFO_THROTTLE(
-          get_logger(), *get_clock(), 500,
-          "TFmini: %.2fm | slow=%d blocked=%d vclose=%d",
-          last_distance_m_, in_slow_zone_, obstacle_blocked_, very_close_);
+
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 500,
+          "TFmini: %.2fm | v=%.2f m/s | slow=%d blocked=%d vclose=%d coast_hold=%d",
+          last_distance_m_, approach_mps, in_slow_zone_, obstacle_blocked_, very_close_, coast_hold_ ? 1:0);
       }
     }
   }
@@ -290,29 +259,19 @@ private:
   // --- Callbacks ---
   void onManual(const px4_msgs::msg::ManualControlSetpoint::SharedPtr m)
   {
-    last_manual_ = *m;
-    last_manual_ts_ = now();
+    last_manual_ = *m; last_manual_ts_ = now();
     if (!enabled_) return;
-
     publishSteering(m->roll);
-
-    float desired = gateThrottle(m->throttle);  // reverse allowed; forward gated + pulses
-    desired = applySlew(desired);               // optional smoothing
+    float desired = gateThrottle(m->throttle);    // reverse allowed; forward gated + pulses
+    desired = applySlew(desired);                 // optional smoothing (defaults OFF)
     publishThrottle(desired);
   }
 
   void controlTick()
   {
     if (!enabled_) return;
-
     readTfmini();
-
-    if (isTimedOut()) {
-      last_cmd_throttle_ = 0.0f;
-      publishThrottle(0.0f);
-      return;
-    }
-
+    if (isTimedOut()) { last_cmd_throttle_ = 0.0f; publishThrottle(0.0f); return; }
     if (last_manual_ts_.nanoseconds() > 0) {
       publishSteering(last_manual_.roll);
       float desired = gateThrottle(last_manual_.throttle);
@@ -321,7 +280,7 @@ private:
     }
   }
 
-  // --- Gating / pulses ---
+  // --- Gating / pulses (unchanged + coast-hold path) ---
   float gateThrottle(float rc_throttle)
   {
     float thr = std::clamp(rc_throttle, -1.0f, 1.0f);
@@ -356,10 +315,23 @@ private:
       return 0.0f;
     }
 
+    // COAST-HOLD (uses the same pulse/hold as blocked)
+    if (coast_hold_) {
+      if (brake_pulse_enable_ && coast_pulse_active_ && last_coast_ts_.nanoseconds() > 0) {
+        const int64_t ms = (tnow - last_coast_ts_).nanoseconds() / 1000000;
+        if (ms >= 0 && ms < brake_pulse_ms_) {
+          return -static_cast<float>(brake_pulse_level_);
+        } else {
+          coast_pulse_active_ = false; // pulse done, continue holding 0 until clear
+        }
+      }
+      return 0.0f;
+    }
+
     // PRE-BRAKE in SLOW zone: a single gentle reverse pulse on entry, then allow forward
     if (pre_brake_enable_ && in_slow_zone_ && last_slow_entry_ts_.nanoseconds() > 0) {
       const int64_t ms = (tnow - last_slow_entry_ts_).nanoseconds() / 1000000;
-      // Only once per entry; ignore if still in cooldown after a recent exit/entry bounce
+      // Once per entry; ignore if still in cooldown after a recent exit/entry bounce
       const bool in_cooldown = (last_slow_exit_ts_.nanoseconds() > 0) &&
                                ((tnow - last_slow_exit_ts_).nanoseconds() / 1000000 < pre_brake_cooldown_ms_);
       if (!slow_pulsed_ && !in_cooldown && ms >= 0 && ms < pre_brake_ms_) {
@@ -372,7 +344,7 @@ private:
     return thr;
   }
 
-  // Slew (reverse bypass + zero-cross snap)
+  // Optional slew limiter (reverse bypass + zero-cross snap)
   float applySlew(float desired)
   {
     const rclcpp::Time tnow = now();
@@ -383,13 +355,12 @@ private:
 
     // Reverse immediate
     if (desired < 0.0f && reverse_bypass_slew_) {
-      if (zero_cross_snap_ && last_cmd_throttle_ > 0.0f) {
-        last_cmd_throttle_ = 0.0f;
-      }
+      if (zero_cross_snap_ && last_cmd_throttle_ > 0.0f) last_cmd_throttle_ = 0.0f;
       last_cmd_throttle_ = std::clamp(desired, -1.0f, 1.0f);
       return last_cmd_throttle_;
     }
 
+    // If slew disabled or no dt, just pass through
     if (dt <= 0.0 || (accel_limit_per_s_ <= 0.0 && decel_limit_per_s_ <= 0.0)) {
       last_cmd_throttle_ = std::clamp(desired, -1.0f, 1.0f);
       return last_cmd_throttle_;
@@ -397,6 +368,7 @@ private:
 
     const float delta = desired - last_cmd_throttle_;
     if (delta == 0.0f) return last_cmd_throttle_;
+
     double limit = (delta > 0.0f) ? (accel_limit_per_s_ * dt) : (-decel_limit_per_s_ * dt);
     float next = last_cmd_throttle_ + (delta > 0.0f
                     ? static_cast<float>(std::min<double>(delta,  limit))
@@ -422,7 +394,6 @@ private:
     t.throttle_body_y = 0.0f;
     thr_pub_->publish(t);
   }
-
   void publishSteering(float roll)
   {
     px4_msgs::msg::RoverSteeringSetpoint s{};
@@ -459,13 +430,18 @@ private:
   double brake_pulse_level_close_{0.22};
   int    brake_pulse_ms_close_{250};
 
-  // State
+  // Distance / RC cache
   double       last_distance_m_{-1.0};
+  double       last_distance_prev_m_{-1.0};
   rclcpp::Time last_distance_ts_{};
+  rclcpp::Time last_distance_prev_ts_{};
+  px4_msgs::msg::ManualControlSetpoint last_manual_{};
+  rclcpp::Time last_manual_ts_{};
+
+  // Obstacle state + transitions
   bool         obstacle_blocked_{false};
   bool         in_slow_zone_{false};
   bool         very_close_{false};
-
   rclcpp::Time last_block_ts_{};
   rclcpp::Time last_clear_ts_{};
   rclcpp::Time last_slow_entry_ts_{};
@@ -473,9 +449,12 @@ private:
   bool         slow_pulsed_{false};
   rclcpp::Time last_close_ts_{};
 
-  px4_msgs::msg::ManualControlSetpoint last_manual_{};
-  rclcpp::Time last_manual_ts_{};
+  // Coast (integrated; no params)
+  bool         coast_hold_{false};
+  bool         coast_pulse_active_{false};
+  rclcpp::Time last_coast_ts_{};
 
+  // Smoothing state
   float        last_cmd_throttle_{0.0f};
   rclcpp::Time last_cmd_stamp_{};
 
