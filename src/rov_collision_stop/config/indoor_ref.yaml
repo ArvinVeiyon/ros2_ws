@@ -1,0 +1,25 @@
+/rov_collision_stop:
+  ros__parameters:
+    control_hz: 100
+
+    stop_threshold_m: 0.36
+    clear_threshold_m: 0.58
+    slow_zone_m: 1.20
+    hard_stop_m: 0.30
+
+    pre_brake_enable: true
+    pre_brake_level: 0.12
+    pre_brake_ms: 120
+    pre_brake_cooldown_ms: 700
+
+    brake_pulse_enable: true
+    brake_pulse_level: 0.30
+    brake_pulse_ms: 350
+    brake_pulse_level_close: 0.36
+    brake_pulse_ms_close: 420
+
+    accel_limit_per_s: 0.0
+    decel_limit_per_s: 0.0
+    reverse_bypass_slew: true
+    zero_cross_snap: true
+    tfmini_timeout_ms: 0
