@@ -13,7 +13,7 @@
     hard_stop_m: 0.4
     pre_brake_cooldown_ms: 100
     pre_brake_enable: true
-    pre_brake_level: 0.9
+    pre_brake_level: 0.5
     pre_brake_ms: 1000
     qos_overrides:
       /parameter_events:
@@ -23,7 +23,7 @@
           history: keep_last
           reliability: reliable
     reverse_bypass_slew: true
-    slow_zone_m: 2.0
+    slow_zone_m: 1.5
     start_type_description_service: true
     stop_threshold_m: 0.6
     tfmini_timeout_ms: 0
