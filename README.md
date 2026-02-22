@@ -18,6 +18,12 @@ ROS 2 workspace for PX4 rover/drone integration, RC control, sensing, and collis
 - Latest release branch: `release/2026-02-22`
 - Latest release tag: `release-20260222`
 
+## Current Release Alignment (2026-02-22)
+- `main_dev` -> `115a91b`
+- `release/2026-02-22` -> `115a91b`
+- `release-20260222` -> `115a91b`
+- Status: working branch, current release branch, and current release tag are aligned to the same commit.
+
 ## Workspace Package Map (`src/`)
 - PX4 interface and messages:
   - `px4_msgs`
