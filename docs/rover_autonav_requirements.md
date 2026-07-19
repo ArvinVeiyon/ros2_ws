@@ -1,11 +1,11 @@
 # Rover Autonomous Navigation — Requirements & Architecture v1
 
-Date: 2026-07-19 | Status: **agreed baseline** | Owner: roz
+Date: 2026-07-19 | Status: **agreed baseline** | Owner: roz | FC firmware: PX4 pxlabs-v1.17.0-2.0.0 @ a52c38b07d (built 2026-05-31)
 Scope decisions (aligned 2026-07-19): **indoor GPS-denied first** · **Nav2 full stack** · **forward-only depth sensing v1**
 
 ## 1. Goal
 
-Make the Vind-Roz rover (4WD skid-steer, PX4 v1.16 rover-differential airframe) navigate autonomously indoors:
+Make the Vind-Roz rover (4WD skid-steer, PX4 1.17 rover-differential airframe) navigate autonomously indoors:
 given a goal point, it plans a global route, drives it, and avoids/reroutes around obstacles using the
 Orbbec Gemini 336L depth camera — all commanded through the **px4-ros2-interface-lib** (control interface
 out, navigation interface in). Maps to autonomy roadmap phase 2 + first half of phase 3/4.
@@ -69,9 +69,11 @@ Orbbec 336L ──USB3──► OrbbecSDK_ROS2 ─depth─► depthimage_to_lase
 ### R4 — Control bridge (px4_ros2 control interface)
 - `nav2_px4_bridge` node (NEW, C++, follows lib examples): registers custom PX4 mode **"AutoNav"**
   selectable from RC/QGC; converts Nav2 `cmd_vel` → `TrajectorySetpoint` (body velocity + yaw rate).
-- Lib v1.6.0 has no rover setpoint type → **M0 bench task: verify PX4 1.16 rover-diff consumes offboard
-  TrajectorySetpoint**; fallback = `DirectActuators` (left/right normalized outputs, we close the loop
-  using wheel odom). Decision recorded after bench test.
+- FC firmware is PX4 1.17 (pxlabs) and exposes the native rover setpoint topics → preferred path is
+  interface-lib 2.1.1 (native rover setpoint types) or a backported rover setpoint-type class on 1.6.1;
+  **M0 bench task decides** (build + runtime messageCompatibilityCheck + wheels-up response test).
+  Fallbacks in order: `TrajectorySetpoint` vel+yawspeed, then `DirectActuators` (left/right normalized
+  outputs, loop closed with wheel odom). Decision recorded after bench test.
 - PX4 rover params must be set first (QGC/NuttShell, NOT pymavlink): `RD_WHEEL_TRACK=0.43`,
   `RO_MAX_THR_SPEED≈3.0`, `RO_SPEED_P/I`, `RO_YAW_RATE_P/I/LIM`, `RO_YAW_P` (all were 0 on 2026-05-30 dump).
 
