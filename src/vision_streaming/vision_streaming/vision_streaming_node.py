@@ -3,8 +3,53 @@ from configparser import ConfigParser
 import subprocess
 import time
 import os
+import re
 
 BY_ID_DIR = "/dev/v4l/by-id"
+SYSFS_V4L = "/sys/class/video4linux"
+
+# v2.1 stable id: usbcam-<vidpid>-<serial>-i<iface>[-<tag><n>] (see
+# vision_config_manager — by-id index order is not boot-stable, so ids are
+# built from USB descriptors and resolved here via sysfs)
+USBCAM_ID_RE = re.compile(
+    r'^usbcam-(?P<vidpid>[0-9a-f]{8})-(?P<serial>.+?)-i(?P<iface>\d+)(?:-\w+)?$')
+
+
+def _read_sysfs(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def resolve_usbcam_id(camera_id):
+    """usbcam-* id -> /dev/videoN via sysfs USB descriptors, or None.
+    On a multi-node interface the lowest videoN wins (uvcvideo registers the
+    capture node before its metadata siblings)."""
+    m = USBCAM_ID_RE.match(camera_id)
+    if not m:
+        return None
+    matches = []
+    for node in os.listdir(SYSFS_V4L):
+        if not node.startswith("video"):
+            continue
+        ifdir = os.path.realpath(os.path.join(SYSFS_V4L, node, "device"))
+        iface = _read_sysfs(os.path.join(ifdir, "bInterfaceNumber"))
+        usbdir = os.path.dirname(ifdir)
+        vid = _read_sysfs(os.path.join(usbdir, "idVendor"))
+        pid = _read_sysfs(os.path.join(usbdir, "idProduct"))
+        if not (iface and vid and pid):
+            continue
+        serial = _read_sysfs(os.path.join(usbdir, "serial")) or \
+            ("port" + os.path.basename(usbdir))
+        serial = re.sub(r'[^A-Za-z0-9_.]', '_', serial)
+        if (vid + pid == m.group('vidpid') and serial == m.group('serial')
+                and iface == m.group('iface')):
+            matches.append(node)
+    if not matches:
+        return None
+    return "/dev/" + min(matches, key=lambda n: int(re.sub(r'\D', '', n)))
 
 # conf `format` -> ffmpeg -input_format
 INPUT_FORMATS = {"MJPG": "mjpeg", "YUYV": "yuyv422"}
@@ -72,18 +117,22 @@ class VisionStreamingNode(Node):
         return parser
 
     def resolve_camera(self, camera_id, camera_name, label):
-        """Stable by-id identity wins; camera_name is the fallback."""
+        """Stable camera_id wins; camera_name is the fallback."""
         if camera_id:
-            by_id = os.path.join(BY_ID_DIR, camera_id)
-            if os.path.exists(by_id):
-                dev = os.path.realpath(by_id)
+            if camera_id.startswith("usbcam-"):
+                dev = resolve_usbcam_id(camera_id)
+            else:
+                # legacy pre-v2.1 conf: camera_id is a /dev/v4l/by-id basename
+                by_id = os.path.join(BY_ID_DIR, camera_id)
+                dev = os.path.realpath(by_id) if os.path.exists(by_id) else None
+            if dev:
                 if dev != camera_name:
                     self.get_logger().warning(
                         f"{label} camera {camera_id} moved: conf says "
                         f"{camera_name}, resolved to {dev} (using {dev})")
                 return dev
             self.get_logger().error(
-                f"{label} camera {camera_id} not present in {BY_ID_DIR} "
+                f"{label} camera {camera_id} not found by USB identity "
                 f"(unplugged?); falling back to {camera_name}")
         return camera_name
 
