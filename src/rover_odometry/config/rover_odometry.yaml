@@ -1,0 +1,23 @@
+wheel_odometry_node:
+  ros__parameters:
+    # Wheel/ESC mapping — verified 2026-07-19 (hand-spin test, all wheels forward)
+    left_addresses: [11, 13]
+    right_addresses: [10, 12]
+    wheel_addresses: [10, 11, 12, 13]
+    wheel_signs: [-1.0, 1.0, 1.0, 1.0]   # only addr 10 reports inverted ERPM
+
+    # Conversion — verified against live VESC data 2026-05-30
+    # ERPM -> m/s = pi * wheel_diameter / (pole_pairs * gear_ratio * 60)
+    #             = pi * 0.1524 / (7 * 3 * 60)
+    erpm_to_ms: 0.000380
+    track_width: 0.43            # m, wheel center to wheel center
+
+    # Idle Hall-sensor jitter measured up to +/-35 ERPM (2026-07-19)
+    deadband_erpm: 40.0
+
+    # Staleness: per-ESC sample older than this is treated as missing
+    esc_timeout: 0.30            # s
+
+    frame_id: odom
+    child_frame_id: base_link
+    publish_tf: true
