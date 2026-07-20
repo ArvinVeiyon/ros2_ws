@@ -94,22 +94,98 @@ Orbbec 336L ──USB3──► OrbbecSDK_ROS2 ─depth─► depthimage_to_lase
 - All `/fmu/*` topics BEST_EFFORT QoS (existing convention). REP-105 frame names, REP-103 conventions
   (PX4 NED ↔ ROS ENU conversion handled by px4_ros2 lib).
 
-## 4. Milestones — in build order
+## 4. Build order — layered environment-first flow (re-ordered 2026-07-19 per roz)
 
-| M | Deliverable | Done when |
+Principle: prove each layer of the stack with QGC in the loop before building the next on top.
+
+| L | Deliverable | Done when |
 |---|---|---|
-| M0 | Install Nav2 + slam_toolbox + Orbbec wrapper; set PX4 rover/EKF2 params; bench-verify offboard TrajectorySetpoint on rover-diff (wheels up) | mode accepts setpoints, wheels respond correctly to vel+yaw cmds |
-| M1 | `rover_odometry` package → `/odom` + TF | push rover 2 m by hand → odom reads 2 m ± 5 %; rotation check vs. measured |
-| M2 | Navigation interface feed → EKF2 | PX4 local position valid + sane indoors (QGC map track matches motion) |
-| M3 | Depth pipeline → `/scan` | rviz shows correct obstacle ranges vs. tape measure, ≥ 10 Hz |
-| M4 | `nav2_px4_bridge` AutoNav mode + watchdogs | teleop via `cmd_vel` through bridge, wheels-up then ground; RC override + timeouts verified |
-| M5 | Nav2 odom-frame: local costmap + point-goal with avoidance (no map yet) | rover reaches 5 m goal around a placed obstacle, 5/5 runs |
-| M6 | slam_toolbox map + global planner | A→B across mapped room with auto-routing + re-route on new obstacle |
-| M7 | Tuning + safety validation checklist pass | all R5 items demonstrated + logged |
+| L0 | **Transport + message alignment**: uXRCE-DDS + MAVLink links verified; px4_msgs = exact firmware match; ws rebuilt | all /fmu topics flow on the new message set; QGC connects |
+| L1 | **Custom mode skeleton**: px4_ros2 "AutoNav" mode registers (lib 2.1.1 vs 1.6.1 decided here), messageCompatibilityCheck passes, arming checks wired | mode visible + selectable in QGC, no motion |
+| L2 | **Mode I/O**: inputs (`cmd_vel`) / outputs (rover speed + yaw-rate setpoints) defined; wheels-up bench response test | commanded speed/yaw → correct wheel response, monitored in QGC |
+| L3 | **Sensor fusion layer-by-layer**: `rover_odometry` → `/odom` + TF (pkg written, bench-verified constants); EKF2 feed via LocalPositionMeasurementInterface; TFmini/VL53L1X confirmed | hand-push 2 m → /odom 2 m ± 5 %; QGC shows xy_valid=true indoors |
+| L4 | **Gemini SDK**: OrbbecSDK_ROS2 install; enumerate its topics; depth → `/scan` | /scan ranges correct vs tape measure, ≥ 10 Hz |
+| L5 | Nav2 odom-frame: local costmap + point-goal with avoidance | 5 m goal around a placed obstacle, 5/5 runs |
+| L6 | slam_toolbox map + global planner | A→B with auto-routing + re-route on new obstacle |
+| L7 | Tuning + safety validation checklist pass | all R5 items demonstrated + logged |
 
-Each milestone lands as its own commit(s) on `main`; tag `v1.2.0` when M7 passes.
+Each layer lands as its own commit(s) on `main`; tag `v1.2.0` when L7 passes.
 
-## 5. Out of scope for v1
+## 5. Status log
+- **2026-07-19 (M0 in progress):** FC firmware identity corrected → pxlabs-v1.17.0-2.0.0 @ a52c38b; firmware source fetched to companion (remote `pxlabs`, branch `pxlabs-fw`). px4_msgs re-pinned to release/1.17 @ 86d8239 (branch `pinned-pxlabs-1.17`) = **static full match vs firmware** (old pin had ArmingCheckRequest v0≠v1 — M4 breaker, caught). interface-lib 1.6.1; 2.1.1 bench test pending. Workspace rebuild running. M1 pre-verified on bench: all 4 VESCs online 50 Hz, sign map {10:−1, 11:+1, 12:+1, 13:+1} (hand-spin test), idle noise ±35 ERPM → deadband ±40.
+
+- **2026-07-20 — L0/L1/L3 closed, L2 partially closed. Layer order changed: L3 now precedes L2.**
+
+  *Why the order changed.* L2 (wheels-up motion) cannot run before L3. Arming in AutoNav was refused
+  (`VehicleCommandAck` result 1 TEMPORARILY_REJECTED, `pre_flight_checks_pass=false`) because
+  `v_xy_valid=false`. Decoding `failsafe_flags` for nav_state 23 shows AutoNav requires
+  `mode_req_local_position` + `mode_req_local_alt` + `mode_req_angular_velocity`, and **every** rover
+  setpoint type in interface-lib release/1.17 (`speed_rate`, `throttle_rate`, `throttle_steering`,
+  `speed_steering`, `throttle_attitude`) sets `config.velocity_enabled = true` in `getConfiguration()`.
+  There is no open-loop bench shortcut through this library — a velocity estimate is mandatory.
+
+  *L1 closed.* `autonav_mode` registers cleanly (messageCompatibilityCheck passes,
+  `RegisterExtComponentReply`, arming-check replies flow). AutoNav = **External Mode 1**, nav_state 23
+  (`COM_MODE0_HASH = -1639016601` = fnv1a("AutoNav")). Mode entry verified repeatedly.
+
+  *Mode control moved off MAVLink onto DDS.* Injecting MAVLink into mavlink-router destabilises the
+  px4_ros2 4 s FMU watchdog. Mode switching now uses `VehicleCommand` DO_SET_MODE on
+  `/fmu/in/vehicle_command` (`tools/dds_setmode.py`), verified nav_state 4 → 23 → 4.
+
+  *QGC "Unknown mode" is not a QGC bug.* The PXLABS QGC fork already has the full upstream wiring
+  (`StandardModes.cc:96` → `PX4FirmwarePlugin::updateAvailableFlightModes` →
+  `FirmwarePlugin::_updateFlightModeList`, which rebuilds `_modeEnumToString`). The FC streams
+  AVAILABLE_MODES_MONITOR (436) at ~0.5 Hz and answers REQUEST_MESSAGE(435) with all 26 modes —
+  index 19 is `AutoNav`, custom_mode `0x0b040000`, user-selectable. The real cause is the GCS uplink:
+  commands injected at the relay reach the drone **0 of 8** times (6/6 locally), and downlink delivers
+  only ~15 % of offered telemetry (176 kbit/s offered → 26 kbit/s at the relay, uniform across all
+  message types). QGC's mode-name request never lands and `StandardModes` has no retry.
+
+  *Arming blockers found and cleared.* (1) `Accels inconsistent` — accel instance 0 off by
+  1.006 m/s² vs `COM_ARM_IMU_ACC` (0.7). Fixed by **quick accel calibration**, the one-position
+  procedure for vehicles too large to rotate: `commander calibrate accel quick`, or
+  `VehicleCommand` 241 with **param5 = 4** (the in-source comment saying "param5 = 3" is wrong; the
+  code sends and checks 4). It writes offsets only. Alternatives for big vehicles: calibrate the FC
+  off-vehicle then run level-horizon (param5 = 2), or deprioritise the bad instance
+  (`CAL_ACCn_PRIO = 0`). Note **accel instance numbering is not stable** across boots/firmware.
+  (2) `v_xy_valid=false` — cleared by L3 below.
+
+  *L3 closed.* `rover_odometry` had a bug that made it discard every wheel: it compared
+  `msg.timestamp` (absolute — uXRCE-DDS offsets only the top-level field) against nested
+  `esc[i].timestamp` (raw boot-relative hrt), so every ESC looked impossibly stale. Fixed to measure
+  staleness against the newest nested stamp and gate on `esc_online_flags`. `/odom` now publishes at
+  99.9 Hz with `odom → base_link` TF. New package **`rover_ekf_bridge`** feeds that velocity to EKF2
+  through `LocalPositionMeasurementInterface` → `/fmu/in/vehicle_visual_odometry` at ~40 Hz, velocity
+  only (wheel-integrated position drifts unbounded), frame BodyFRD. Two gotchas: EKF2 drops the whole
+  sample unless the velocity vector is all-finite (`ev_vel_control.cpp`: `vel.isAllFinite()`) and the
+  lib fills unset fields with NaN, so **`velocity_z` must be sent explicitly** (0 for a ground rover);
+  and inbound `timestamp_sample` *is* time-offset corrected by the FC, so ROS-clock stamps are correct.
+  With `EKF2_EV_CTRL = 4` (bit 2, 3D velocity — default 0 = EV disabled): `cs_ev_vel` true,
+  **xy_valid + v_xy_valid true, dead_reckoning false**, preflight passes, `cs_valid_fake_pos` gone.
+
+  *L2 partial.* First armed run succeeded: AutoNav entered, vehicle armed, `/cmd_vel` reached the
+  wheels, the 500 ms watchdog zeroed them, auto-disarm and Hold restore clean. Yaw drove all four
+  wheels in the correct differential pattern. **Forward did not** — only addr 13 turned (~430 ERPM)
+  and it did not scale between 0.2 and 0.4 m/s. A Manual-mode RC test then drove **all four wheels
+  both directions at ±1500-1580 ERPM (±0.58-0.60 m/s)**, proving motors, ESCs and L/R allocation are
+  good and confirming the addr-10 sign inversion. So the forward anomaly is in the closed-loop speed
+  path, not hardware — and it is confounded: on stands both the speed and yaw-rate loops close on body
+  motion that cannot occur (yaw ran ~9× the geometric expectation, classic wind-up), while
+  `rover_ekf_bridge` was simultaneously feeding EKF2 wheel-derived fiction. **Treat the forward result
+  as void; re-test on the floor.** For any future wheels-up bench work, stop `rover_ekf_bridge` first.
+
+  *RC mapping observed:* ch2 = forward/reverse throttle (1023-1981), ch4 = steering (1116-1671),
+  ch3 static 1001 (unused), ch1 static. `RC_MAP_FLTMODE` is still 0 — no mode channel mapped.
+
+  *Tools added* (`tools/`): `dds_setmode.py`, `l2_watch.py`, `l2_test.py` (refuses to arm without
+  `--wheels-are-up`, always disarms and restores Hold), `manual_drive_log.py`.
+
+  *Open items:* floor test of forward drive; inspect `RO_MAX_THR_SPEED` / `RO_SPEED_P` / `RO_SPEED_I`
+  / `RO_YAW_RATE_P|I` (params are not readable over DDS); fix the GCS uplink; map `RC_MAP_FLTMODE`;
+  run `autonav_mode` as a systemd unit with `Restart=always` (its 4 s FMU watchdog has aborted
+  repeatedly, including with no MAVLink load).
+
+## 6. Out of scope for v1
 360° sensing, outdoor/GPS mode switching, YOLO/semantic perception (phase 5), multi-goal missions and
 LLM mission brain (phase 6), rough-terrain traversability. Design keeps them pluggable (extra costmap
 layers / behavior-tree nodes / localization sources).
