@@ -84,14 +84,22 @@ setpoint types + `rover_velocity` example) — M0 bench task: build vs pinned px
 Fallback if the pxlabs rover module rejects them: `TrajectorySetpoint` velocity+yawspeed, then `DirectActuators`.
 
 ## 5. Gaps to close (= milestone M0 remainder)
-1. Install Nav2 1.3.5 + slam_toolbox 2.8.2 (apt, verified available).
-2. Install OrbbecSDK_ROS2 wrapper (Gemini 336L, depth-only for autonomy).
+1. Install Nav2 1.3.5 + slam_toolbox 2.8.2 (apt, verified available — still **not installed** as of 2026-07-20).
+2. Install OrbbecSDK_ROS2 wrapper (Gemini 336L, depth-only for autonomy). As of 2026-07-20 it is
+   **absent entirely** — no source under `~`, and **no Orbbec udev rules**, which the wrapper needs to
+   claim the USB device unprivileged. The camera itself is fine: `2bc5:0807` at USB3 5000 Mbps, device
+   nodes unheld. Also missing: `nlohmann-json3-dev`, `libgflags-dev`, `ros-jazzy-camera-info-manager`,
+   `ros-jazzy-diagnostic-updater`, `ros-jazzy-image-publisher`, `ros-jazzy-backward-ros`,
+   `ros-jazzy-xacro`. Disk is at 82% (11 GB free) — check before building.
 3. ✅ done 2026-07-20 in part: rover params set via NuttShell; `EKF2_EV_CTRL=4` set and verified.
    Still to inspect: `RO_MAX_THR_SPEED`, `RO_SPEED_P/I`, `RO_YAW_RATE_P/I` (params are **not** readable
    over DDS — needs QGC or NuttShell).
 4. ⚠️ partly done 2026-07-20: armed in AutoNav, `/cmd_vel` reaches the wheels, watchdog verified, yaw
    drives all four correctly — but forward drove only one wheel and did not scale. Manual RC test drove
    all four both directions, so hardware is good and the fault is in the closed-loop speed path.
+   **Root cause since found: `RO_SPEED_LIM = 0.01` m/s clamps every speed setpoint
+   (`DifferentialSpeedControl.cpp:119`), so 0.2 and 0.4 m/s produce identical output. Fix with
+   `param set RO_SPEED_LIM 1.0` + `param save`, then retest on the floor.**
    **A wheels-up bench cannot validate these loops** (speed and yaw-rate close on body motion that
    cannot happen) — retest forward on the floor, and stop `rover_ekf_bridge` during any wheels-up test
    so wheel odometry does not feed EKF2 motion that is not occurring.

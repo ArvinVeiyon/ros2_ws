@@ -180,10 +180,40 @@ Each layer lands as its own commit(s) on `main`; tag `v1.2.0` when L7 passes.
   *Tools added* (`tools/`): `dds_setmode.py`, `l2_watch.py`, `l2_test.py` (refuses to arm without
   `--wheels-are-up`, always disarms and restores Hold), `manual_drive_log.py`.
 
-  *Open items:* floor test of forward drive; inspect `RO_MAX_THR_SPEED` / `RO_SPEED_P` / `RO_SPEED_I`
-  / `RO_YAW_RATE_P|I` (params are not readable over DDS); fix the GCS uplink; map `RC_MAP_FLTMODE`;
-  run `autonav_mode` as a systemd unit with `Restart=always` (its 4 s FMU watchdog has aborted
-  repeatedly, including with no MAVLink load).
+  *Forward-drive root cause found (`param show RO_*`, NuttShell).* **`RO_SPEED_LIM = 0.01` m/s.**
+  `DifferentialSpeedControl.cpp:119` clamps every setpoint with
+  `math::constrain(_speed_setpoint, -RO_SPEED_LIM, +RO_SPEED_LIM)`, so 0.2 and 0.4 m/s both collapse to
+  0.01 m/s — exactly why the two runs gave identical 430/431 ERPM and why only the least-loaded wheel
+  moved while the others stayed below break-away torque. The parameter's own doc calls it "Speed limit
+  — used to cap speed setpoints", default -1 (disabled); 0.01 is a mis-set, saved value. Fix:
+  `param set RO_SPEED_LIM 1.0` (just above autonav_mode's own 0.8 m/s clamp, keeping a hard FC-side cap
+  as defence in depth; 3.0 would match `RO_MAX_THR_SPEED`) then `param save`, and retest on the floor.
+
+  Everything else in the group is sane: `RO_MAX_THR_SPEED` 3.0, `RO_SPEED_P` 0.5, `RO_SPEED_I` 0.1,
+  `RO_YAW_P` 2.0, `RO_YAW_RATE_P` 2.0, `RO_YAW_RATE_I` 0.1, `RO_YAW_RATE_LIM` 1.57; accel/decel/jerk
+  limits all -1 (disabled). The yaw path is never clamped, which is why yaw drove all four wheels.
+
+  *Parameters are MAVLink-only.* They are not exposed over DDS in any form, so reading or setting them
+  needs NuttShell or the PARAM protocol. Budget for link disturbance: after several `mavlink_shell.py`
+  sessions the FC heartbeat disappeared from `tcp:127.0.0.1:5760` (only a GCS-type heartbeat left) and
+  param reads stopped answering. DDS was entirely unaffected throughout, so the FC was healthy and
+  autonav work continued — but QGC cannot connect until `mavlink.router` is restarted. Stop
+  `autonav_mode` before any MAVLink work so its 4 s watchdog cannot abort mid-session.
+
+  *Open items:* apply the `RO_SPEED_LIM` fix and retest forward **on the floor**; restart
+  `mavlink.router`; fix the GCS uplink; map `RC_MAP_FLTMODE` (still 0 — observed sticks: ch2 =
+  forward/reverse, ch4 = steering, ch3 unused); run `autonav_mode` as a systemd unit with
+  `Restart=always` (its 4 s FMU watchdog has aborted repeatedly, including with no MAVLink load).
+
+  *L4/L5 prerequisites audited 2026-07-20 — none installed yet.* The Gemini 336L itself is ready:
+  enumerated as `2bc5:0807` at **USB3 5000 Mbps**, device nodes unheld, and `vision_streaming` is on
+  the LG FPV camera so there is no contention. Missing: **OrbbecSDK_ROS2 entirely** (no source, and no
+  Orbbec udev rules — without the rule the wrapper cannot claim the device unprivileged; use the
+  v2-main line for Gemini 330-series on Jazzy, cloned over SSH since companion HTTPS to GitHub hangs on
+  IPv6), **Nav2 1.3.5**, **slam_toolbox 2.8.2**, and seven build deps (`nlohmann-json3-dev`,
+  `libgflags-dev`, `ros-jazzy-camera-info-manager`, `ros-jazzy-diagnostic-updater`,
+  `ros-jazzy-image-publisher`, `ros-jazzy-backward-ros`, `ros-jazzy-xacro`).
+  `depthimage_to_laserscan` 2.5.1 is already present. Watch disk: **82% used, 11 GB free of 58 GB**.
 
 ## 6. Out of scope for v1
 360° sensing, outdoor/GPS mode switching, YOLO/semantic perception (phase 5), multi-goal missions and
