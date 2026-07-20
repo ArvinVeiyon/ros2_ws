@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>autonav_mode</name>
+  <version>1.0.0</version>
+  <description>AutoNav custom PX4 rover mode: registers via px4-ros2-interface-lib, maps /cmd_vel to rover speed + yaw-rate setpoints with safety watchdog</description>
+  <maintainer email="vind@todo.todo">vind</maintainer>
+  <license>Apache License 2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>px4_ros2_cpp</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
