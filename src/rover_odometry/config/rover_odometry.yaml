@@ -21,6 +21,15 @@ wheel_odometry_node:
     # Staleness: per-ESC sample older than this is treated as missing
     esc_timeout: 0.30            # s
 
+    # Heading source. 'gyro' takes yaw from the FC's EKF-fused attitude
+    # (/fmu/out/vehicle_attitude, ~92 Hz); 'wheels' uses the legacy
+    # (v_right - v_left)/track. Gyro is strongly preferred: this is a skid-steer,
+    # so it can ONLY turn by making all four tyres scrub sideways, and the wheels
+    # therefore cannot observe true rotation at all. Falls back to wheels
+    # automatically if attitude goes stale.
+    yaw_source: gyro
+    attitude_timeout: 0.5        # s, older than this = stale, fall back to wheels
+
     frame_id: odom
     child_frame_id: base_link
     publish_tf: true
