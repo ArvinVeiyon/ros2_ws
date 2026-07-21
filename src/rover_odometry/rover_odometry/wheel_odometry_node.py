@@ -32,7 +32,10 @@ class WheelOdometryNode(Node):
         self.declare_parameter('wheel_addresses', [10, 11, 12, 13])
         self.declare_parameter('wheel_signs', [-1.0, 1.0, 1.0, 1.0])
         self.declare_parameter('erpm_to_ms', 0.000380)
-        self.declare_parameter('track_width', 0.43)
+        # MEASURED 2026-07-21: 0.31 m, left hub centre to right hub centre.
+        # NOT 0.43 -- that is the WHEELBASE (front hub to rear hub); it sat in this
+        # slot until now and under-reported every yaw rate by ~28% (0.31/0.43).
+        self.declare_parameter('track_width', 0.31)
         self.declare_parameter('deadband_erpm', 40.0)
         self.declare_parameter('esc_timeout', 0.30)
         self.declare_parameter('frame_id', 'odom')

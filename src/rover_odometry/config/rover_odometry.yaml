@@ -10,7 +10,10 @@ wheel_odometry_node:
     # ERPM -> m/s = pi * wheel_diameter / (pole_pairs * gear_ratio * 60)
     #             = pi * 0.1524 / (7 * 3 * 60)
     erpm_to_ms: 0.000380
-    track_width: 0.43            # m, wheel center to wheel center
+    # MEASURED 2026-07-21: 0.31 m, left hub centre to right hub centre.
+    # Was 0.43 until then -- that figure is the WHEELBASE (front hub to rear hub),
+    # not the track, and it under-reported every yaw rate by ~28% (0.31/0.43).
+    track_width: 0.31            # m, LEFT-to-RIGHT wheel center distance
 
     # Idle Hall-sensor jitter measured up to +/-35 ERPM (2026-07-19)
     deadband_erpm: 40.0
