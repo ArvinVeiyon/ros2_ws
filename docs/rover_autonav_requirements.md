@@ -215,6 +215,118 @@ Each layer lands as its own commit(s) on `main`; tag `v1.2.0` when L7 passes.
   `ros-jazzy-image-publisher`, `ros-jazzy-backward-ros`, `ros-jazzy-xacro`).
   `depthimage_to_laserscan` 2.5.1 is already present. Watch disk: **82% used, 11 GB free of 58 GB**.
 
+- **2026-07-21 — L4 closed. L5 unblocked.**
+
+  *Everything the 2026-07-20 audit listed as missing is now installed:* Nav2 **1.3.12** +
+  `nav2-bringup`, `slam_toolbox` **2.8.5** (both newer than the audited candidates), all seven build
+  deps, and the Orbbec udev rule `99-obsensor-libusb.rules`. `OrbbecSDK_ROS2` is cloned to
+  `src/OrbbecSDK_ROS2` @ `ec6bc22` and built Release — `orbbec_camera` (~8 min), `orbbec_camera_msgs`,
+  `orbbec_description`. **It is still untracked in git**; pin it as a submodule or gitignore it,
+  otherwise a fresh clone of this workspace cannot build.
+
+  *Camera bring-up.* `ros2 launch orbbec_camera gemini_330_series.launch.py` (the 336L is a 330-series
+  part; a `_low_cpu` variant exists if CPU gets tight). SDK 2.9.3 over **USB3.2**, depth 848x480@30
+  Y16, color 1280x720@30 MJPG, init 1.5 s. Topics: `/camera/depth/image_raw`, `/camera/depth/points`,
+  `/camera/color/image_raw{,/compressed}`, `camera_info`, `device_status`. The wrapper **publishes its
+  own TF tree** rooted at `camera_link` (→ `camera_depth_frame` → `camera_depth_optical_frame`, with
+  the −90/−90 optical rotation), so do not re-publish those frames — the only transform the integrator
+  owes it is the physical mount.
+
+  *`/scan` pipeline.* `launch/depth_to_scan.launch.py` — deliberately a **standalone launch file, not
+  a package**, run by path until proven. It adds exactly two things: the `base_link → camera_link`
+  static TF and `depthimage_to_laserscan_node` (`scan_height` 40, `scan_time` 0.033, range 0.3–8.0 m,
+  `output_frame` `camera_depth_frame`). **Verified live: /scan at 20–21 Hz**, FOV ±0.80 rad (~92°,
+  matching the 336L), real returns. Meets the L4 rate bar (≥ 10 Hz) with margin.
+
+  *L4 acceptance is only half-met.* The bar is "ranges correct **vs tape measure**" — rate and
+  plausibility are confirmed, the metric check is not, and the mount TF is a **placeholder**
+  (`cam_x=0.20 cam_y=0.00 cam_z=0.15`, zero rpy, exposed as launch args). Nav2 builds its costmap from
+  `/scan` transformed through that, so an unmeasured mount puts obstacles in the wrong place and the
+  planner drives into them. Measure `camera_link` relative to `base_link` before L5. If the camera is
+  pitched down at all, revisit `scan_height`: a downward tilt makes the ground register as an obstacle
+  band.
+
+  *Throughput note.* Depth delivers ~24 Hz against a configured 30, and `/scan` ~20 Hz — suspect CPU/USB
+  contention with `vision_streaming` on the LG FPV camera (R6 compute budget). Not blocking; revisit if
+  Nav2 costmap updates lag.
+
+  *Disk pressure resolved.* Reclaimed **20.4 GB**: 17.85 GB of pre-2025 `~/.ros/log` debris (16,063
+  files — the obsolete `camera_sw_node_obsolute.py` logged all 18 RC channels at INFO on every ~50 Hz
+  RC callback, ~950 lines/s; the live `rc_control_node` is clean, and the obsolete file should be
+  deleted from `src/rc_control/`), plus a 1.7 GB journal vacuum and 569 MB apt cache. **85% → 49%,
+  29 GB free.** The SD card is fully partitioned (63.8 GB device, no unallocated space); the "64 GB vs
+  58 G" gap is GB-vs-GiB plus ext4 overhead, not lost capacity.
+
+  *Open items carried forward:* measured mount TF, then L5 (slam_toolbox on `/scan` + the live `/odom`,
+  then Nav2 bringup); submodule-pin OrbbecSDK; delete `camera_sw_node_obsolute.py`. Still blocking
+  *driving* a plan but not mapping: `RO_SPEED_LIM=0.01` unfixed and `mavlink.router` likely still wedged.
+  **(Superseded by the 2026-07-21 evening entry below: the mount TF is now measured, `RO_SPEED_LIM` is
+  fixed at 0.70, and the MAVLink link is healed. OrbbecSDK pinning and the obsolete file remain open.)**
+
+- **2026-07-21 (evening) — geometry corrected, L2 blockers cleared, stack put under systemd.**
+  A companion reboot wiped the manual `setsid` bring-up and, usefully, healed the wedged MAVLink link
+  (FC heartbeat returned on `tcp:127.0.0.1:5760`). Params became readable again — and
+  `PARAM_REQUEST_READ` via pymavlink does **not** re-wedge the link, unlike `mavlink_shell.py`. Prefer
+  it. Beware that integer params arrive in `PARAM_VALUE`'s float field as a bit pattern: `EKF2_EV_CTRL`
+  reads as `5.605e-45`, which *is* the integer 4, not corruption.
+
+  *`RO_SPEED_LIM` fixed: 0.01 → 0.70* (user-applied, `param save`, readback-verified). This was the
+  root cause of the forward-drive failure — every speed setpoint was being clamped to ±0.01 m/s, which
+  is why 0.2 and 0.4 m/s produced identical wheel speeds. 0.70 deliberately sits *below*
+  `autonav_mode`'s own 0.8 m/s clamp, so the FC is the binding limit, and above the ~0.58–0.60 m/s the
+  drivetrain actually reaches.
+
+  *Camera mount TF measured — L5 unblocked.* `base_link → camera_link` = **x −0.125, y 0.000, z 0.420**,
+  zero rpy, verified live through `tf2_echo`. `cam_x` is negative because the lens sits 12.5 cm *behind*
+  the rotation centre (wheelbase 0.43, lens 0.34 behind the front axle). Cross-check: lens 0.49 behind
+  the front chassis edge, front axle 0.15 behind it → 0.34 + 0.09 = 0.43 = wheelbase. **Pitch and roll
+  were measured, not assumed**, using the Gemini 336L's own IMU: enable with `enable_accel:=true
+  enable_gyro:=true` (off by default), average `/camera/accel/sample`, and gravity read 9.785 of
+  9.787 m/s² on a single axis with orthogonal components of −0.7° and +0.9° ⇒ level within ~1°.
+
+  *Two geometry bugs, and they were masking each other.* The rover's **wheelbase is 0.43 m** and its
+  **track is 0.31 m** — and 0.43 had been entered as the track width in *both* places that consume it:
+  `rover_odometry` (`track_width`, used as `(v_right − v_left)/track`) and the FC (`RD_WHEEL_TRACK`,
+  used as `Δv = ω × track`). Odometry therefore under-reported every yaw rate by ~28% while the FC
+  commanded a ~39% oversized differential — errors in opposite directions, so the loop looked
+  self-consistent while the underlying geometry was wrong. Both are now 0.31, saved and readback-
+  verified. Straight-line odometry was never affected (that comes from `erpm_to_ms`). Note the FC's
+  yaw-rate gains were tuned against the oversized value and may want revisiting after a floor run.
+  A trap worth recording: `wheel_odometry_node` is launched without `--params-file`, so the YAML is
+  never read and the **hardcoded `declare_parameter` default is what actually runs** — that silent
+  override is what hid the bug. Both the YAML and the default are now corrected.
+
+  *Wheels-up limit cycle — diagnosed, not a fault.* Armed on stands in Position mode the rover is quiet
+  until a stick input, after which all four wheels swing full range ±1500 ERPM at ~1.2 s period and
+  **never stop until disarm**, even with the stick centred. EKF2 meanwhile accumulated 4.25 m of
+  phantom travel on a vehicle that never moved. Cause: `rover_ekf_bridge` feeds wheel-derived velocity
+  into EKF2, so spinning wheels manufacture displacement; Position mode is a position *hold*, so it
+  drives to "return", which spins the wheels, which manufactures more error the other way — an
+  undamped limit cycle, since the only corrective action available is the one creating the error, and
+  on stands there is no load or friction to damp it. `RO_SPEED_I` winds up and guarantees the
+  overshoot. It re-confirms all four motors drive both directions at full range. It will **not** occur
+  on the floor, where the rover actually arrives. Avoidance on stands: use Manual only, or stop
+  `rover_ekf_bridge` (which drops `v_xy_valid` so Position/AutoNav cannot arm at all — the safe
+  configuration). Never stop the bridge *while armed* in a mode that requires velocity: that trips a
+  failsafe. Disarm first.
+
+  *RC mapping resolved.* `RC_MAP_KILL_SW=8`, `RC_MAP_ARM_SW=5`, `RC_MAP_FLTMODE=6`, `NAV_RCL_ACT=6`
+  (disarm on RC loss). Earlier notes recording "nothing mapped" were stale. Kill, arm and disarm were
+  then **physically tested and confirmed working** — though in Manual; kill *inside AutoNav* remains
+  untested. Caution: `SYS_STATUS`'s `rc` health bit read `True` while the transmitter was switched
+  off, so it is not a reliable RC-presence check.
+
+  *Stack moved to systemd* (`systemd/install_rover_units.sh`), replacing a manual bring-up that a
+  reboot had wiped twice: `rover-camera`, `rover-scan`, `rover-odometry`, `rover-autonav-mode` all
+  enabled and verified active. `Restart=always` also covers the recurring px4_ros2 4 s "no request from
+  FMU" watchdog abort. **`rover-ekf-bridge` is installed but deliberately left `disabled`** — enabling
+  it would recreate the limit cycle unattended on a rover that powers up on stands. Start it by hand on
+  the floor; AutoNav cannot arm without it.
+
+  *L2 remains open* and is now a genuinely valid test for the first time: rover on the floor, restart
+  the bridge, drive 0.2 m/s and confirm 0.4 m/s produces roughly double the wheel speed — the check the
+  `RO_SPEED_LIM` clamp previously made impossible.
+
 ## 6. Out of scope for v1
 360° sensing, outdoor/GPS mode switching, YOLO/semantic perception (phase 5), multi-goal missions and
 LLM mission brain (phase 6), rough-terrain traversability. Design keeps them pluggable (extra costmap

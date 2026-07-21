@@ -5,3 +5,8 @@ log/
 __pycache__/
 .colcon/
 *.log
+
+# Third-party ROS2 wrapper for the Orbbec Gemini 336L (~201 MB working tree).
+# Deliberately NOT vendored -- see docs/third_party.md for the repo + exact commit
+# to reproduce it. Promote to a git submodule when convenient.
+src/OrbbecSDK_ROS2/
