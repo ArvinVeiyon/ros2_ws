@@ -41,13 +41,20 @@ Orbbec 336L ──USB3──► OrbbecSDK_ROS2 ─depth─► depthimage_to_lase
 ## 3. Requirements
 
 ### R1 — Localization (indoor, GPS-denied)
-- `rover_odometry` package (NEW): subscribes `/fmu/out/esc_status`, computes differential odometry
-  (full math, verified constants, and ESC address map already documented in memory `rover_odometry.md`:
-  ERPM→m/s ×0.000380, track 0.43 m, left={11,13} right={10,12}), publishes `/odom` (nav_msgs) + TF `odom→base_link`. ≥20 Hz.
-- Feed EKF2 via px4_ros2 `LocalPositionMeasurementInterface` (lib v1.6.0, present in ws) so PX4 local
-  position becomes valid indoors. PX4 side: enable EV fusion (`EKF2_EV_CTRL`), disable GPS gating
-  (`EKF2_GPS_CTRL=0` indoor profile), heading from odom yaw (mag unreliable indoors).
-- `slam_toolbox` (apt 2.8.2) over depth-derived `/scan` provides `map→odom` correction + the global map.
+- `rover_odometry` package: subscribes `/fmu/out/esc_status`, computes differential odometry
+  (full math, verified constants, and ESC address map documented in memory `rover_odometry.md`:
+  ERPM→m/s ×0.000380, **track 0.31 m** — measured 2026-07-21; the 0.43 m recorded here previously
+  was the *wheelbase* — left={11,13} right={10,12}), publishes `/odom` (nav_msgs) + TF
+  `odom→base_link`. Achieves ~100 Hz, well past the ≥20 Hz bar.
+- **Heading comes from the gyro, not the wheels** (`yaw_source: gyro`, default since 2026-07-21).
+  A skid-steer has no steering axle and can only rotate by scrubbing all four tyres sideways, so
+  `(v_right − v_left)/track` measures something the wheels cannot observe and over-reports rotation
+  by a surface- and load-dependent amount. Yaw is taken from `/fmu/out/vehicle_attitude` (~92 Hz)
+  and integrated as deltas. Wheels supply distance, gyro supplies heading.
+- Feed EKF2 via px4_ros2 `LocalPositionMeasurementInterface` (lib pinned release/1.17 @ 4a3370f) so
+  PX4 local position becomes valid indoors. PX4 side: enable EV fusion (`EKF2_EV_CTRL=4`, verified
+  working), GPS absent indoors anyway.
+- `slam_toolbox` (apt, **2.8.5 installed**) over depth-derived `/scan` provides `map→odom` correction + the global map.
   Acceptance: return-to-start error < 0.3 m over a 20 m indoor loop.
 
 ### R2 — Perception
@@ -59,12 +66,15 @@ Orbbec 336L ──USB3──► OrbbecSDK_ROS2 ─depth─► depthimage_to_lase
   space**: Nav2 configured with no reverse velocities; recovery behaviors limited to in-place rotation
   (skid-steer can turn on the spot) and forward re-plan.
 
-### R3 — Planning (Nav2 1.3.5, apt)
+### R3 — Planning (Nav2, apt — **1.3.12 installed**)
 - Global: planner server (NavFn/Smac 2D) on slam_toolbox map → auto-routing A→B.
 - Local: controller server (start DWB; evaluate MPPI later) + local costmap (rolling, 4×4 m, obstacle
   layer from `/scan`, inflation ≥ rover half-width 0.30 m + margin).
-- Footprint: rectangle of real chassis (measure; track 0.43 m + wheel width). Max speed indoor 0.8 m/s,
-  max yaw rate 1.0 rad/s (below PX4 `RO_YAW_RATE_LIM`).
+- Footprint: rectangle of real chassis — **measured 2026-07-21: wheelbase 0.43 m (front hub to rear
+  hub), track 0.31 m (left hub to right hub), top plate 0.405 m wide (so the wheels sit *inboard* of
+  the plate and the plate is the wider extent).** Use the plate width plus a margin, not the track.
+  Inflation ≥ half the widest extent (~0.21 m) + margin. Max speed indoor 0.8 m/s, max yaw rate
+  1.0 rad/s (below PX4 `RO_YAW_RATE_LIM` 1.57; note FC `RO_SPEED_LIM` is 0.70 and binds first).
 
 ### R4 — Control bridge (px4_ros2 control interface)
 - `nav2_px4_bridge` node (NEW, C++, follows lib examples): registers custom PX4 mode **"AutoNav"**
@@ -74,8 +84,12 @@ Orbbec 336L ──USB3──► OrbbecSDK_ROS2 ─depth─► depthimage_to_lase
   **M0 bench task decides** (build + runtime messageCompatibilityCheck + wheels-up response test).
   Fallbacks in order: `TrajectorySetpoint` vel+yawspeed, then `DirectActuators` (left/right normalized
   outputs, loop closed with wheel odom). Decision recorded after bench test.
-- PX4 rover params must be set first (QGC/NuttShell, NOT pymavlink): `RD_WHEEL_TRACK=0.43`,
-  `RO_MAX_THR_SPEED≈3.0`, `RO_SPEED_P/I`, `RO_YAW_RATE_P/I/LIM`, `RO_YAW_P` (all were 0 on 2026-05-30 dump).
+- PX4 rover params must be set first (QGC/NuttShell for writes; reads work via pymavlink
+  `PARAM_REQUEST_READ`): **`RD_WHEEL_TRACK=0.31`** (measured — was 0.43, the wheelbase, until
+  2026-07-21), **`RO_SPEED_LIM=0.70`** (was 0.01, which clamped every speed setpoint),
+  `RO_MAX_THR_SPEED≈3.0`, `RO_SPEED_P/I`, `RO_YAW_RATE_P/I/LIM`, `RO_YAW_P` (all were 0 on the
+  2026-05-30 dump). Note the yaw-rate gains were tuned while `RD_WHEEL_TRACK` was oversized and may
+  want revisiting after a floor run.
 
 ### R5 — Safety (non-negotiable, each independently)
 1. RC mode switch out of AutoNav = instant manual authority (PX4-native, no companion code in path).
@@ -210,7 +224,7 @@ Each layer lands as its own commit(s) on `main`; tag `v1.2.0` when L7 passes.
   the LG FPV camera so there is no contention. Missing: **OrbbecSDK_ROS2 entirely** (no source, and no
   Orbbec udev rules — without the rule the wrapper cannot claim the device unprivileged; use the
   v2-main line for Gemini 330-series on Jazzy, cloned over SSH since companion HTTPS to GitHub hangs on
-  IPv6), **Nav2 1.3.5**, **slam_toolbox 2.8.2**, and seven build deps (`nlohmann-json3-dev`,
+  IPv6), **Nav2 1.3.12**, **slam_toolbox 2.8.5** (apt versions confirmed installed), and seven build deps (`nlohmann-json3-dev`,
   `libgflags-dev`, `ros-jazzy-camera-info-manager`, `ros-jazzy-diagnostic-updater`,
   `ros-jazzy-image-publisher`, `ros-jazzy-backward-ros`, `ros-jazzy-xacro`).
   `depthimage_to_laserscan` 2.5.1 is already present. Watch disk: **82% used, 11 GB free of 58 GB**.
@@ -326,6 +340,36 @@ Each layer lands as its own commit(s) on `main`; tag `v1.2.0` when L7 passes.
   *L2 remains open* and is now a genuinely valid test for the first time: rover on the floor, restart
   the bridge, drive 0.2 m/s and confirm 0.4 m/s produces roughly double the wheel speed — the check the
   `RO_SPEED_LIM` clamp previously made impossible.
+
+- **2026-07-21 (late) — heading moved from the wheels to the gyro.**
+  Follows directly from the track-width fix above, and closes the part of the problem that fix could
+  not reach. Correcting `track_width` 0.43 → 0.31 removed a *constant* ~28% scale error in yaw. It
+  could not remove the *variable* error, because on a skid-steer the wheels are not a heading sensor
+  at all: with no steering axle the vehicle rotates only by forcing all four tyres to scrub sideways,
+  so slip is the turning mechanism rather than a defect, and `(v_right − v_left)/track` reports a
+  rotation that depends on surface, load and turn radius. Heading now comes from the FC's EKF-fused
+  attitude, which senses rotation directly and is indifferent to what the wheels did; the wheels keep
+  supplying forward distance, which they measure honestly.
+
+  *Source.* `/fmu/out/vehicle_attitude` at ~92 Hz. `/fmu/out/vehicle_angular_velocity` is **not** in
+  this FC's `dds_topics.yaml`, so attitude is the gyro-derived signal actually reachable over DDS.
+
+  *Design choices worth keeping.* Yaw **deltas** are integrated rather than PX4's absolute yaw being
+  adopted, so `/odom` retains its own origin (theta starts at 0) and no NED-vs-ENU absolute convention
+  has to be reconciled — only a single sign flip, since PX4 yaw is positive clockwise seen from above
+  and ROS is positive counter-clockwise. `quat_reset_counter` changes are EKF resets, i.e. yaw steps
+  the vehicle never performed, and those deltas are **dropped**; integrating them would inject
+  rotation that did not happen and break odom continuity. The yaw baseline advances even on skipped
+  steps, so a dropped or out-of-range `dt` cannot re-emerge later as false accumulated rotation. Yaw
+  covariance is now source-dependent (0.002 gyro vs 0.02 wheels) so Nav2 and slam_toolbox weight the
+  pose according to how good it actually is. `yaw_source: wheels` restores the old path for A/B work.
+
+  *Verified at rest only:* `/odom` 98.8 Hz, yaw drift 0.044° over 12 s, `twist.angular.z` −0.0004
+  rad/s, automatic fallback and EKF-reset handling exercised. **Rotation accuracy itself is NOT yet
+  validated** — standing still proves the signal is quiet, not that turns are measured correctly.
+  During the L2 floor session, turn the rover a known angle against floor marks and compare `/odom`
+  yaw with reality, and run it once with `yaw_source:=wheels` to quantify how large the slip error
+  actually was.
 
 ## 6. Out of scope for v1
 360° sensing, outdoor/GPS mode switching, YOLO/semantic perception (phase 5), multi-goal missions and
