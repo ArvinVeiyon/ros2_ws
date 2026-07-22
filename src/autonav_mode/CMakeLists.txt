@@ -13,12 +13,13 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(px4_ros2_cpp REQUIRED)
 
 include_directories(include)
 
 add_executable(autonav_mode src/main.cpp)
-ament_target_dependencies(autonav_mode rclcpp geometry_msgs)
+ament_target_dependencies(autonav_mode rclcpp geometry_msgs sensor_msgs)
 target_link_libraries(autonav_mode px4_ros2_cpp::px4_ros2_cpp)
 
 install(TARGETS autonav_mode DESTINATION lib/${PROJECT_NAME})
