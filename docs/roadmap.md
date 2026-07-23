@@ -84,6 +84,17 @@ track — the wheels sit inboard.
 - Relay clock/NTP — recurring; needs local chrony on the companion. → `project_relay_ntp_setup.md`
 - RELAY-STN #2 USB brownout — EU card exceeds the Pi4 USB budget; needs a powered hub.
 
+**Firmware `dds_topics.yaml` — add on the next planned flash (not worth a flash on its own):**
+Verified 2026-07-23: every topic Nav2 / slam_toolbox / L5-L7 consumes is already exposed and flowing
+(`/scan` 25 Hz, `/odom`, `/tf`, `/cmd_vel`, `vehicle_attitude` 100 Hz, `vehicle_local_position_v1`
+50 Hz, `esc_status` 50 Hz, `failsafe_flags`, `collision_constraints`, `home_position_v1`). Nothing on
+the critical path is blocked. When the pxlabs firmware is next reflashed, batch these in:
+- **`/fmu/out/vehicle_angular_velocity`** — filtered, bias-corrected body yaw rate. Helps **#20 yaw
+  tuning** (measure actual vs commanded rate directly) and **gyro-yaw odometry** (clean `angular.z`).
+  Currently absent; worked around via `vehicle_attitude` deltas (100 Hz) + raw `sensor_combined.gyro_rad`.
+- **`/fmu/out/sensors_status_imu`** (optional, diagnostics only) — per-IMU accel/gyro health, to diagnose
+  the "accel 0 inconsistency" over DDS instead of QGC/MAVLink (relevant because the GCS uplink is dead).
+
 **Cleanup / hygiene:**
 - Multicam **Phase D** — rc_control + optical_flow → stable camera aliases, then delete the stale udev rule.
 - Delete `src/rc_control/camera_sw_node_obsolute.py` (the 18 GB log offender).
