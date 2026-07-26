@@ -70,10 +70,15 @@ Orbbec 336L ──USB3──► OrbbecSDK_ROS2 ─depth─► depthimage_to_lase
 - Global: planner server (NavFn/Smac 2D) on slam_toolbox map → auto-routing A→B.
 - Local: controller server (start DWB; evaluate MPPI later) + local costmap (rolling, 4×4 m, obstacle
   layer from `/scan`, inflation ≥ rover half-width 0.30 m + margin).
-- Footprint: rectangle of real chassis — **measured 2026-07-21: wheelbase 0.43 m (front hub to rear
-  hub), track 0.31 m (left hub to right hub), top plate 0.405 m wide (so the wheels sit *inboard* of
-  the plate and the plate is the wider extent).** Use the plate width plus a margin, not the track.
-  Inflation ≥ half the widest extent (~0.21 m) + margin. Max speed indoor 0.8 m/s, max yaw rate
+- Footprint: rectangle of real chassis — **re-measured 2026-07-26 (supersedes 07-21): wheelbase
+  0.43 m (front hub to rear hub), track 0.31 m (left hub to right hub), top plate 0.730 m long ×
+  **0.450 m wide** (07-21 said 0.405 — wrong), ground to top plate **0.235 m** (07-21 said 0.180 —
+  wrong; the 0.42 m camera height was a direct measure to the lens, so the old mast stood 0.185 m
+  above the plate, not 0.24), front plate tip → front axle **0.130 m** (07-21 said 0.150).
+  Plate decomposition checks out: 0.130 + 0.430 + 0.170 = 0.730.** The wheels sit *inboard* of the
+  plate, so the plate is the wider extent — use plate width plus a margin, not the track.
+  Inflation ≥ half the widest extent (**~0.225 m**, was ~0.21) + margin.
+  Rotation centre (= `base_link`) is **0.345 m back from the front plate tip**. Max speed indoor 0.8 m/s, max yaw rate
   1.0 rad/s (below PX4 `RO_YAW_RATE_LIM` 1.57; note FC `RO_SPEED_LIM` is 0.70 and binds first).
 
 ### R4 — Control bridge (px4_ros2 control interface)
@@ -259,6 +264,23 @@ Each layer lands as its own commit(s) on `main`; tag `v1.2.0` when L7 passes.
   planner drives into them. Measure `camera_link` relative to `base_link` before L5. If the camera is
   pitched down at all, revisit `scan_height`: a downward tilt makes the ground register as an obstacle
   band.
+
+  **Update 2026-07-26 — camera remounted on a custom printed bracket.** The 07-21 measured TF
+  (`cam_x −0.125 cam_y 0 cam_z 0.42`) is void. New design target: **`cam_x 0.00`** (camera moved onto
+  the rotation centre — skid-steer spins about that point, so a centred sensor sees pure rotation and
+  cam_x measurement error becomes nearly free; it also puts the ~0.3 m sensor minimum range *inside*
+  the footprint, so unlike a front mount there is no blind strip ahead of the bumper), **`cam_y 0.00`**,
+  **`cam_z 0.305`** (0.235 plate + 0.070 bracket). 0.070 rather than 0.055 because the USB exits
+  downward and plug + cable occupy ~0.060 m — at 0.060 the camera would rock on the connector.
+  Hard floor is 0.017 m of plate clearance, below which the deck itself appears in `/scan` as a
+  permanent obstacle and the reflex collision-stop never releases.
+  `range_max` cut **8.0 → 5.0** (at cam_z 0.305 the floor enters the scan band at 6.25 m).
+  Why the height dropped at all: `scan_height: 40` is only **±2.79°** with the live intrinsics
+  (fx=fy=409.85, 848×480), so `/scan` is a thin slab and `cam_z` *chooses the sensing plane* — at 0.42
+  the rover was blind to anything under 0.371 m at 1 m, i.e. most obstacles shorter than its own
+  chassis. At 0.305 that becomes 0.256 m. **pitch/roll are targets, not measurements** — re-derive from
+  `/camera/accel/sample` after fitting, as was done on 07-21. See the AFTER-FITTING checklist at the
+  foot of `launch/depth_to_scan.launch.py`.
 
   *Throughput note.* Depth delivers ~24 Hz against a configured 30, and `/scan` ~20 Hz — suspect CPU/USB
   contention with `vision_streaming` on the LG FPV camera (R6 compute budget). Not blocking; revisit if
