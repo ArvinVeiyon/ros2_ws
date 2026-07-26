@@ -10,7 +10,7 @@ Companion ↔ FC: uXRCE-DDS over ttyAMA4 @ 921600 (microxrce-agent.service)
 | `px4_msgs` | **`86d8239`** (release/1.17, branch `pinned-pxlabs-1.17`) | **PINNED — statically verified** | Re-pinned 2026-07-19: `check-message-compatibility.py` vs the real firmware (`pxlabs-fw` @ a52c38b) is a **full exact match**. The old `d2c9ff2` pin had `ArmingCheckRequest` v0 (2 fields) vs firmware v1 — it would have broken px4_ros2 mode registration. |
 | `px4-ros2-interface-lib` | **release/1.17 `4a3370f`** (branch `pinned-1.17`) | match the firmware's release line | Has the native rover setpoint types (`RoverSpeedRateSetpointType`) and the `rover_velocity` example. **2.1.1 FAILS to build** against 1.17 msgs (uses `ConfigOverrides.disable_auto_set_home`, needs px4_msgs > 1.17) → all lib 2.x is blocked until a firmware upgrade. Local example experiments preserved on branch `local/manual-mode-experiments`. |
 | `px4_ros_com` | `6d6fce9` (main + 1 local commit) | current (0 behind upstream) | frame conversion utils + examples. |
-| `ldlidar_stl_ros2` | v3.0.3 + 2 mandatory local fixes | **never clobber** | pthread include + hardcoded ttyAMA3 (see memory); STL-19 hardware with other team. |
+| `ldlidar_stl_ros2` | v3.0.3 + 2 mandatory local fixes | **never clobber** | pthread include + hardcoded ttyAMA3 (see memory); STL-19 hardware still with the other team, but **re-fit is roadmap item O1 (primary-target sensor since 2026-07-23)** — on return the lidar owns `/scan`, depth remaps to `/scan_depth`. |
 
 Fetch note: companion HTTPS to GitHub hangs (IPv6 issue) — fetch with
 `git -c url."git@github.com:".insteadOf="https://github.com/" fetch` (SSH works).
@@ -84,13 +84,14 @@ setpoint types + `rover_velocity` example) — M0 bench task: build vs pinned px
 Fallback if the pxlabs rover module rejects them: `TrajectorySetpoint` velocity+yawspeed, then `DirectActuators`.
 
 ## 5. Gaps to close (= milestone M0 remainder)
-1. Install Nav2 1.3.5 + slam_toolbox 2.8.2 (apt, verified available — still **not installed** as of 2026-07-20).
-2. Install OrbbecSDK_ROS2 wrapper (Gemini 336L, depth-only for autonomy). As of 2026-07-20 it is
-   **absent entirely** — no source under `~`, and **no Orbbec udev rules**, which the wrapper needs to
-   claim the USB device unprivileged. The camera itself is fine: `2bc5:0807` at USB3 5000 Mbps, device
-   nodes unheld. Also missing: `nlohmann-json3-dev`, `libgflags-dev`, `ros-jazzy-camera-info-manager`,
-   `ros-jazzy-diagnostic-updater`, `ros-jazzy-image-publisher`, `ros-jazzy-backward-ros`,
-   `ros-jazzy-xacro`. Disk is at 82% (11 GB free) — check before building.
+1. ✅ **DONE 2026-07-21**: Nav2 **1.3.12** + slam_toolbox **2.8.5** installed from apt (verified
+   installed 2026-07-26).
+2. ✅ **DONE 2026-07-21 (L4)**: OrbbecSDK_ROS2 wrapper built; `/scan` live @20 Hz via
+   `~/ros2_ws/launch/depth_to_scan.launch.py`, running as `rover-camera` + `rover-scan` services.
+   Remaining nit: the wrapper source is still **untracked in git** (ros2_ws todo #16).
+   *(Historical: as of 2026-07-20 it was absent entirely, with the deps below missing —
+   `nlohmann-json3-dev`, `libgflags-dev`, `ros-jazzy-{camera-info-manager,diagnostic-updater,image-publisher,backward-ros,xacro}`.
+   Disk was 82%/11 GB free then; after the 2026-07-21 cleanup it is 58% / 24 G free.)*
 3. ✅ done 2026-07-20 in part: rover params set via NuttShell; `EKF2_EV_CTRL=4` set and verified.
    Still to inspect: `RO_MAX_THR_SPEED`, `RO_SPEED_P/I`, `RO_YAW_RATE_P/I` (params are **not** readable
    over DDS — needs QGC or NuttShell).
@@ -98,8 +99,10 @@ Fallback if the pxlabs rover module rejects them: `TrajectorySetpoint` velocity+
    drives all four correctly — but forward drove only one wheel and did not scale. Manual RC test drove
    all four both directions, so hardware is good and the fault is in the closed-loop speed path.
    **Root cause since found: `RO_SPEED_LIM = 0.01` m/s clamps every speed setpoint
-   (`DifferentialSpeedControl.cpp:119`), so 0.2 and 0.4 m/s produce identical output. Fix with
-   `param set RO_SPEED_LIM 1.0` + `param save`, then retest on the floor.**
+   (`DifferentialSpeedControl.cpp:119`), so 0.2 and 0.4 m/s produce identical output.**
+   ✅ **FIXED 2026-07-21: `RO_SPEED_LIM` set to `0.70`** (not 1.0), `param save`, readback-verified.
+   Armed floor L2 retest **PASSED 2026-07-23**. Also fixed then: `RD_WHEEL_TRACK` 0.43 → **0.31**
+   (0.43 was the wheelbase, not the track).
    **A wheels-up bench cannot validate these loops** (speed and yaw-rate close on body motion that
    cannot happen) — retest forward on the floor, and stop `rover_ekf_bridge` during any wheels-up test
    so wheel odometry does not feed EKF2 motion that is not occurring.

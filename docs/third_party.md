@@ -47,4 +47,7 @@ Requires the udev rule `99-obsensor-libusb.rules` (already installed on this com
 ## ldlidar_stl_ros2
 
 `src/ldlidar_stl_ros2/` is a nested git repo, deliberately left untracked. The STL-19 hardware was
-moved to another team on 2026-04-17; the package is kept only for reference.
+moved to another team on 2026-04-17 and has not come back yet — but since 2026-07-23 the STL-19 is a
+**primary-target sensor again** (outdoor 360° + SLAM, roadmap O1), so this package is *pending
+re-integration*, not reference-only. On re-integration the lidar owns `/scan` and `depth_to_scan`
+remaps to `/scan_depth`.
