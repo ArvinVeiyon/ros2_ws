@@ -58,6 +58,10 @@ WATCHDOG_PERIOD_S = 2.0
 BACKOFF_INITIAL_S = 2.0
 BACKOFF_MAX_S = 30.0
 STABLE_RUNTIME_S = 60.0   # runs longer than this reset the backoff
+STALL_TIMEOUT_S = 10.0    # running ffmpeg, frame counter frozen -> hung
+STARTUP_GRACE_S = 30.0    # opening the camera and decoding frame 1 can be slow
+STATS_PERIOD_S = 1        # ffmpeg -stats_period: progress blocks per second
+KILL_GRACE_S = 5.0        # SIGTERM -> SIGKILL escalation
 
 
 class VisionStreamingNode(Node):
@@ -73,6 +77,13 @@ class VisionStreamingNode(Node):
         stream is restarted with backoff (2s..30s). A camera failure is
         therefore always visible in the journal and self-healing, never a
         silent zombie (incident 2026-07-19: depth node in conf -> black feed).
+      - stall watchdog: liveness is judged by ffmpeg's own -progress frame
+        counter, not by the process being alive. A UVC camera can stop
+        feeding frames while ffmpeg keeps running with every thread parked,
+        so the stream dies with no exit code for the death watchdog to catch
+        (incident 2026-07-26: GS video cut off, service still "active", zero
+        RTP for ~5 min until a manual restart). Frozen counter -> SIGTERM,
+        SIGKILL if it is wedged in a v4l2 ioctl, then the normal restart path.
       - ffmpeg stderr goes to the journal (-loglevel error -nostats keeps it
         quiet in normal operation).
     """
@@ -104,6 +115,13 @@ class VisionStreamingNode(Node):
         self.started_at = None
         self.next_restart_at = 0.0
         self.backoff_s = BACKOFF_INITIAL_S
+
+        # stall detection state (see check_ffmpeg)
+        self.progress_fd = None
+        self.progress_buf = b''
+        self.last_frame = -1
+        self.saw_frames = False
+        self.last_progress_at = 0.0
 
         self.start_streaming()
         self.watchdog = self.create_timer(WATCHDOG_PERIOD_S, self.check_ffmpeg)
@@ -143,7 +161,9 @@ class VisionStreamingNode(Node):
             self.schedule_restart()
             return
 
+        # -progress feeds the stall watchdog; it is the only thing on stdout
         command = ['ffmpeg', '-loglevel', 'error', '-nostats',
+                   '-progress', 'pipe:1', '-stats_period', str(STATS_PERIOD_S),
                    '-thread_queue_size', '4096']
 
         command += [
@@ -178,10 +198,16 @@ class VisionStreamingNode(Node):
         self.get_logger().info(f"Starting FFmpeg with command: {' '.join(command)}")
         self.ffmpeg_process = subprocess.Popen(
             command,
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
             # stderr inherited -> journald, so camera errors are visible
         )
+        self.progress_fd = self.ffmpeg_process.stdout.fileno()
+        os.set_blocking(self.progress_fd, False)
+        self.progress_buf = b''
+        self.last_frame = -1
+        self.saw_frames = False
         self.started_at = time.monotonic()
+        self.last_progress_at = self.started_at
         self.get_logger().info("FFmpeg process started.")
 
     def schedule_restart(self):
@@ -190,22 +216,104 @@ class VisionStreamingNode(Node):
         self.get_logger().warning(f"Retrying stream in {self.backoff_s:.0f}s.")
         self.backoff_s = min(self.backoff_s * 2, BACKOFF_MAX_S)
 
+    def drain_progress(self):
+        """Consume ffmpeg's -progress output; True if the frame counter moved.
+
+        This pipe MUST be drained every tick: let it fill (64K) and ffmpeg
+        blocks writing to it, manufacturing the very stall we are watching
+        for.
+        """
+        if self.progress_fd is None:
+            return False
+        while True:
+            try:
+                chunk = os.read(self.progress_fd, 65536)
+            except (BlockingIOError, OSError):
+                break
+            if not chunk:          # EOF: ffmpeg exited, poll() reports it below
+                break
+            self.progress_buf += chunk
+        lines = self.progress_buf.split(b'\n')
+        self.progress_buf = lines.pop()   # keep the partial trailing line
+        advanced = False
+        for line in lines:
+            if not line.startswith(b'frame='):
+                continue
+            try:
+                frame = int(line[len(b'frame='):])
+            except ValueError:
+                continue
+            if frame > self.last_frame:
+                self.last_frame = frame
+                advanced = True
+                if frame > 0:
+                    self.saw_frames = True
+        return advanced
+
+    def close_progress(self):
+        if self.ffmpeg_process is not None and self.ffmpeg_process.stdout:
+            try:
+                self.ffmpeg_process.stdout.close()
+            except OSError:
+                pass
+        self.progress_fd = None
+        self.progress_buf = b''
+
+    def kill_ffmpeg(self):
+        """SIGTERM, escalating to SIGKILL — ffmpeg wedged in a v4l2 ioctl
+        does not act on SIGTERM."""
+        proc = self.ffmpeg_process
+        if proc is None:
+            return
+        proc.terminate()
+        try:
+            proc.wait(timeout=KILL_GRACE_S)
+        except subprocess.TimeoutExpired:
+            self.get_logger().warning("FFmpeg ignored SIGTERM; sending SIGKILL.")
+            proc.kill()
+            try:
+                proc.wait(timeout=KILL_GRACE_S)
+            except subprocess.TimeoutExpired:
+                self.get_logger().error(
+                    "FFmpeg survived SIGKILL (stuck in the kernel); the camera "
+                    "likely needs a USB reset.")
+        self.close_progress()
+
     def check_ffmpeg(self):
-        """Watchdog: reap a dead ffmpeg, log it loudly, restart with backoff."""
+        """Watchdog: restart ffmpeg when it dies, and also when it hangs alive
+        with its frame counter frozen (a dead stream has no exit code)."""
         if self.ffmpeg_process is None:
             if time.monotonic() >= self.next_restart_at:
                 self.start_streaming()
             return
+
+        now = time.monotonic()
+        if self.drain_progress():
+            self.last_progress_at = now
+        runtime = now - (self.started_at or now)
+
         rc = self.ffmpeg_process.poll()
-        if rc is None:
+        if rc is not None:
+            self.get_logger().error(
+                f"FFmpeg exited with code {rc} after {runtime:.0f}s "
+                f"(camera unplugged, wrong format, or busy device — see journal).")
+            self.close_progress()
+            if runtime > STABLE_RUNTIME_S:
+                self.backoff_s = BACKOFF_INITIAL_S
+            self.schedule_restart()
             return
-        runtime = time.monotonic() - (self.started_at or time.monotonic())
-        self.get_logger().error(
-            f"FFmpeg exited with code {rc} after {runtime:.0f}s "
-            f"(camera unplugged, wrong format, or busy device — see journal).")
-        if runtime > STABLE_RUNTIME_S:
-            self.backoff_s = BACKOFF_INITIAL_S
-        self.schedule_restart()
+
+        # Alive, but is it producing? Frame 1 can lag the camera opening.
+        stalled_for = now - self.last_progress_at
+        if stalled_for > (STALL_TIMEOUT_S if self.saw_frames else STARTUP_GRACE_S):
+            self.get_logger().error(
+                f"FFmpeg alive but no new frames for {stalled_for:.0f}s after "
+                f"{runtime:.0f}s (camera stopped feeding); killing the stalled "
+                f"stream and restarting.")
+            self.kill_ffmpeg()
+            if runtime > STABLE_RUNTIME_S:
+                self.backoff_s = BACKOFF_INITIAL_S
+            self.schedule_restart()
 
     def calculate_overlay_position(self):
         if self.pip_position == "bottom-right":
@@ -224,8 +332,9 @@ class VisionStreamingNode(Node):
     def stop_streaming(self):
         if self.ffmpeg_process is not None:
             self.get_logger().info("Stopping FFmpeg stream")
-            self.ffmpeg_process.terminate()
-            self.ffmpeg_process.wait()
+            # kill_ffmpeg, not a bare wait(): a hung ffmpeg ignores SIGTERM and
+            # would block shutdown forever
+            self.kill_ffmpeg()
             self.ffmpeg_process = None
 
 
