@@ -57,7 +57,7 @@ echo "writing units..."
 mkunit rover-camera.service \
   "Orbbec Gemini 336L ROS2 wrapper (depth+color+IMU)" \
   "" \
-  "ros2 launch orbbec_camera gemini_330_series.launch.py enable_accel:=true enable_gyro:=true"
+  "ros2 launch orbbec_camera gemini_330_series.launch.py enable_accel:=true enable_gyro:=true enable_point_cloud:=false"
 
 # Wants= not Requires= so a camera restart does not hard-kill the scan node;
 # it just retries until the depth topics reappear.
