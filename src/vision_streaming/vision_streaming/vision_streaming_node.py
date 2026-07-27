@@ -25,8 +25,16 @@ def _read_sysfs(path):
 
 def resolve_usbcam_id(camera_id):
     """usbcam-* id -> /dev/videoN via sysfs USB descriptors, or None.
-    On a multi-node interface the lowest videoN wins (uvcvideo registers the
-    capture node before its metadata siblings)."""
+
+    On a multi-node interface the sibling with the lowest sysfs `index` wins.
+    uvcvideo registers the capture node as index 0 and its metadata node as
+    index 1, and `index` is intrinsic to the device -- unlike the videoN
+    number, which is assigned from the lowest free slot and so is reshuffled
+    by every reboot and USB rebind (this cam has been video8, video0 and
+    video1 in one evening). Picking by lowest videoN, as this did before,
+    would hand ffmpeg the *metadata* node whenever the numbering happened to
+    land the other way round: ffmpeg opens it happily, receives no frames,
+    and hangs alive forever with nothing to log."""
     m = USBCAM_ID_RE.match(camera_id)
     if not m:
         return None
@@ -46,10 +54,13 @@ def resolve_usbcam_id(camera_id):
         serial = re.sub(r'[^A-Za-z0-9_.]', '_', serial)
         if (vid + pid == m.group('vidpid') and serial == m.group('serial')
                 and iface == m.group('iface')):
-            matches.append(node)
+            idx = _read_sysfs(os.path.join(SYSFS_V4L, node, "index"))
+            matches.append((int(idx) if idx and idx.isdigit() else 1 << 30,
+                            int(re.sub(r'\D', '', node) or 0), node))
     if not matches:
         return None
-    return "/dev/" + min(matches, key=lambda n: int(re.sub(r'\D', '', n)))
+    # lowest index first; videoN only breaks ties / covers a missing index
+    return "/dev/" + min(matches)[2]
 
 # conf `format` -> ffmpeg -input_format
 INPUT_FORMATS = {"MJPG": "mjpeg", "YUYV": "yuyv422"}
