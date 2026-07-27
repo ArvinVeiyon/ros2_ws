@@ -58,20 +58,32 @@ def generate_launch_description():
     #                   + cable occupy ~0.060 m: at 0.060 the plug would land on the
     #                   plate and the camera would rock on the connector instead of
     #                   sitting flat -- an unmeasurable pitch error, plus cable strain.
-    #   pitch/roll 0 -- TARGET. The 07-21 values were MEASURED from the camera IMU
-    #                   (/camera/accel/sample: gravity 9.785 of 9.787 on one axis,
-    #                   orthogonal components -0.7 and +0.9 deg => level within ~1
-    #                   deg). That measurement is VOID after the remount -- redo it.
-    #                   Pitch matters more than it looks: 5 deg of downward tilt
-    #                   drags the floor into the scan band from 3.1 m and it reads
-    #                   as a wall dead ahead.
+    #   pitch/roll   -- MEASURED 2026-07-27 after the remount, rover on flat floor,
+    #                   mount flat. 4561 samples of /camera/accel/sample at rest:
+    #                   mean (x -0.098, y -9.765, z -0.397), |g| 9.774 vs 9.81,
+    #                   sd <= 0.34. The topic is camera_accel_OPTICAL_frame
+    #                   (x right, y down, z fwd), so convert to camera_link
+    #                   (x fwd, y left, z up) before reading angles off it:
+    #                   x_link = z_opt, y_link = -x_opt, z_link = -y_opt.
+    #                   Up-vector in link coords (-0.0406, +0.0100, +0.9992)
+    #                   => pitch +0.0406 rad (2.33 deg NOSE DOWN),
+    #                      roll  +0.0100 rad (0.57 deg, left side up).
+    #                   Yaw is unobservable from gravity; left at 0.
+    #                   The 07-21 values are VOID (measured before the remount).
+    #                   Pitch matters more than it looks: the band is
+    #                   cam_z +/- 0.049*d, and a downward pitch drops the centre
+    #                   by tan(pitch)*d as well, so the lower edge is 0.0897*d
+    #                   and bare floor enters /scan at 0.305/0.0897 = 3.4 m
+    #                   instead of 6.25 m -- it reads as a wall dead ahead and
+    #                   the reflex collision-stop will act on it. This is why the
+    #                   angle is worth carrying rather than rounding to zero.
     mount_args = [
         DeclareLaunchArgument('cam_x', default_value='0.00'),
         DeclareLaunchArgument('cam_y', default_value='0.00'),
         DeclareLaunchArgument('cam_z', default_value='0.305'),
         DeclareLaunchArgument('cam_yaw', default_value='0.0'),
-        DeclareLaunchArgument('cam_pitch', default_value='0.0'),
-        DeclareLaunchArgument('cam_roll', default_value='0.0'),
+        DeclareLaunchArgument('cam_pitch', default_value='0.0406'),
+        DeclareLaunchArgument('cam_roll', default_value='0.0100'),
     ]
 
     base_to_camera = Node(
