@@ -74,6 +74,28 @@ Two questions the baseline answers:
 
 | Run | RO_YAW_RATE_P | RO_YAW_RATE_I | fwd rpm @0.2 | fwd rpm @0.4 | yaw rpm | Notes |
 |-----|---------------|---------------|-------------|-------------|---------|-------|
-| baseline | 2.0 | 0.1 | | | | |
+| baseline 07-28 | 2.0 | 0.1 | `[-169,171,170,171]` | not run | `[-868,-762,813,-1065]` | L2 PASS. Yaw ~5x forward effort, ~40% L/R asymmetry. Run ended in **wall contact** — see below. |
 | | | | | | | |
 | | | | | | | |
+
+Achieved body yaw rate was NOT captured on the baseline — `l2_test.py` does not record it, so
+commanded-vs-achieved (the number that decides whether the gains are actually too hot, as opposed to
+skid-steer scrub genuinely costing that much) is still unmeasured. `tools/yaw_response_log.py` was
+added for this: run it alongside `l2_test.py --live`, it commands nothing and only listens.
+
+## ⚠️ 2026-07-28 — WALL CONTACT during the baseline run. Read before the next floor run.
+
+The rover reached the wall with the reflex collision-stop active and working. Two facts combined:
+
+1. **Yaw is never gated.** `autonav_mode/include/autonav_mode/mode.hpp:99` only ever zeroes `speed`;
+   `yaw_rate` passes through by design ("so the vehicle can back off / turn away"). The baseline yaw
+   leg ran 760–1065 ERPM for 2 s with ~40% L/R asymmetry — an asymmetric spin **translates**, and
+   nothing in the reflex stop can clamp it.
+2. **Thresholds are measured at the camera, not the bumper.** `base_link` is **0.345 m back from the
+   front plate tip** and `cam_x = 0.00`, so the camera sits 0.345 m behind the bumper. `stop_distance`
+   0.60 m therefore leaves the bumper only **0.255 m** from the wall, with no allowance for braking
+   distance. Logged blocks at 0.49–0.59 m put the bumper at 0.145–0.245 m.
+   (Note the 07-26/27 remount **improved** this — the old `cam_x −0.125` left only 0.130 m.)
+
+Planning a run on "front = 1.85 m clear" by budgeting only the forward legs (~0.7 m) is not sufficient;
+budget the yaw leg's translation too, or run yaw tests facing open space.

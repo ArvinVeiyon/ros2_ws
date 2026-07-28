@@ -20,6 +20,7 @@ Every motion step is bounded in time and re-zeroes before moving on. Any step
 that fails its check aborts straight to step 7.
 
 Usage: l2_test.py --live            (waits for your RC arm, then runs)
+       l2_test.py --live --speed 0.4 --yaw 0.3   (override the drive setpoints)
        l2_test.py --wheels-are-up   (deprecated alias for --live)
        l2_test.py --dry-run         (steps 1-2 only, never arms, no motion)
 """
@@ -119,12 +120,21 @@ class L2(Node):
         return list(self.rpm[:4])
 
 
+def _opt(flag, default):
+    """Read `--flag value` from argv, keeping the plain sys.argv style used here."""
+    if flag not in sys.argv:
+        return default
+    return float(sys.argv[sys.argv.index(flag) + 1])
+
+
 def main():
     live = ('--live' in sys.argv) or ('--wheels-are-up' in sys.argv)
     dry_run = '--dry-run' in sys.argv
     if not live and not dry_run:
         print('REFUSING: pass --live (you arm via RC) or --dry-run')
         return 2
+    speed = _opt('--speed', TEST_SPEED)
+    yaw_rate = _opt('--yaw', TEST_YAW_RATE)
 
     rclpy.init()
     n = L2()
@@ -195,8 +205,8 @@ def main():
             raise SystemExit
         print(f'    in AutoNav, armed, holding zero. nav_state={n.nav} rpm={n.rpm[:4]}')
 
-        print(f'--- 4. forward {TEST_SPEED} m/s for {MOTION_SECONDS}s ---')
-        peak = n.drive(TEST_SPEED, 0.0, MOTION_SECONDS)
+        print(f'--- 4. forward {speed} m/s for {MOTION_SECONDS}s ---')
+        peak = n.drive(speed, 0.0, MOTION_SECONDS)
         print(f'    peak rpm={peak}  (sign is NOT physical direction on this HW)')
         # NOTE: if a wall is within collision.stop_distance the reflex will
         # legitimately zero forward — "no response" here can mean "wall ahead".
@@ -207,15 +217,15 @@ def main():
             failures.append(f'forward: wheels {stalled} did not respond {peak}')
         n.coast(1.0)
 
-        print(f'--- 5. yaw {TEST_YAW_RATE} rad/s for {MOTION_SECONDS}s ---')
-        peak = n.drive(0.0, TEST_YAW_RATE, MOTION_SECONDS)
+        print(f'--- 5. yaw {yaw_rate} rad/s for {MOTION_SECONDS}s ---')
+        peak = n.drive(0.0, yaw_rate, MOTION_SECONDS)
         print(f'    peak rpm={peak}')
         if all(r == 0 for r in peak):
             failures.append('yaw: no wheel response')
         n.coast(1.0)
 
         print('--- 6. watchdog: stop publishing /cmd_vel ---')
-        n.drive(TEST_SPEED, 0.0, 1.5)
+        n.drive(speed, 0.0, 1.5)
         idle = n.coast(2.0)
         print(f'    rpm 2s after last cmd_vel={idle} (expect zeros)')
         if any(abs(r) > 50 for r in idle):

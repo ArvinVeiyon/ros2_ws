@@ -31,11 +31,26 @@ An interposer node on the `/cmd_vel` topic could be routed around; a clamp in `u
 
 - Subscribes `/scan` (`sensor_msgs/LaserScan`, `SensorDataQoS`) alongside `/cmd_vel`.
 - Each scan, computes the **nearest valid return in a ±20° forward cone** (`sector_half_angle`).
-- In `updateSetpoint()`, if the command is **forward** (`speed > 0`) **and** that nearest return is
-  inside `stop_distance` → forward is clamped to **0**. **Reverse and yaw always pass through**, so the
-  vehicle can still back off or turn away.
-- **Hysteresis:** blocks at `stop_distance` (0.60 m), releases only past `clear_distance` (0.75 m) — no
-  chatter at the threshold.
+- **Distances are CLEARANCE AT THE FRONT BUMPER, not raw `/scan` range.** `/scan` originates at
+  `camera_link`, which sits `front_overhang` behind the front plate tip, so the raw range has the
+  overhang subtracted before any comparison. `front_overhang` was **measured 0.337 m** on 2026-07-28
+  (rover parked square against a flat wall, zero gap: 178 consecutive scans, min == max == 0.337 m);
+  it agrees with the 0.345 m `base_link`→plate-tip figure in the requirements doc to within 8 mm.
+  **Re-measure the same way after any camera remount.**
+- In `updateSetpoint()`, the block decision is evaluated **every tick** (not only when driving forward),
+  so the hysteresis state tracks reality continuously. When blocked:
+  - forward (`speed > 0`) is clamped to **0**;
+  - **yaw is CAPPED to `blocked_yaw_rate`** (0.30 rad/s), not freed — enough authority to rotate away,
+    not enough to lunge;
+  - **reverse always passes through**, so the vehicle can back off.
+- **Hysteresis:** blocks at `stop_distance` (0.35 m at the bumper), releases only past `clear_distance`
+  (0.50 m at the bumper) — no chatter at the threshold.
+
+> **Why yaw is capped (2026-07-28 wall contact).** Yaw used to pass through untouched. A skid-steer
+> "spin" with unequal left/right wheel speeds **translates** — the baseline yaw leg ran 760–1065 ERPM
+> with ~40% L/R asymmetry — so an ungated yaw command drove the rover into a wall the forward brake
+> could see perfectly well and had no authority over. Compounding it, the thresholds were then measured
+> at the *camera*: 0.60 m of raw range was only ~0.26 m of real bumper clearance.
 - **Fail-safe:** if `/scan` is stale/absent for longer than `scan_timeout` (0.5 s), forward is blocked
   when `require_scan=true` — **no blind driving** if perception dies.
 - **Directional:** obstacles outside the ±20° cone are ignored (e.g. an object at −37° during testing was
@@ -46,8 +61,10 @@ An interposer node on the `/cmd_vel` topic could be routed around; a clamp in `u
 | Param | Default | Meaning |
 |---|---|---|
 | `collision.enabled` | `true` | master enable |
-| `collision.stop_distance` | `0.60 m` | block forward closer than this |
-| `collision.clear_distance` | `0.75 m` | release only past this (hysteresis) |
+| `collision.stop_distance` | `0.35 m` | block forward closer than this — **at the bumper** (raw scan 0.69 m) |
+| `collision.clear_distance` | `0.50 m` | release only past this — **at the bumper** (raw scan 0.84 m) |
+| `collision.front_overhang` | `0.337 m` | scan origin → front bumper; measured, re-measure after a remount |
+| `collision.blocked_yaw_rate` | `0.30 rad/s` | max \|yaw\| while blocked (cap, not cancel) |
 | `collision.sector_half_angle` | `0.35 rad` (≈20°) | half-width of the forward cone |
 | `collision.scan_timeout` | `0.5 s` | `/scan` older than this ⇒ perception stale |
 | `collision.require_scan` | `true` | stale/absent scan ⇒ block forward (fail-safe) |

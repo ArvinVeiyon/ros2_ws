@@ -23,12 +23,31 @@ static constexpr double kCmdVelTimeout = 0.5;  // [s]
 // Reflex collision-stop defaults (overridable via ROS params, "collision.*").
 // This is the last line of defence: it sits inside the executor — the single
 // funnel to the motors — so it applies no matter who publishes /cmd_vel
-// (a test script, Nav2, a joystick). It only ever REMOVES forward motion;
-// reverse and yaw are always left free so the vehicle can back off / turn away.
-static constexpr double kStopDistance = 0.6;     // [m] block forward if closer than this
-static constexpr double kClearDistance = 0.75;   // [m] release only once farther than this (hysteresis)
+// (a test script, Nav2, a joystick). It REMOVES forward motion and, when
+// blocked, also CAPS yaw; reverse always passes through so the vehicle can
+// back off.
+//
+// Distances below are CLEARANCE AT THE FRONT BUMPER, not raw /scan range.
+// /scan originates at camera_link, which sits kFrontOverhang behind the front
+// plate tip, so the raw range is converted before any comparison. Getting this
+// wrong is what put the rover into a wall on 2026-07-28: 0.60 m of raw range
+// was only 0.255 m of actual bumper clearance.
+static constexpr double kStopDistance = 0.35;    // [m] block forward if bumper closer than this
+static constexpr double kClearDistance = 0.50;   // [m] release only once farther than this (hysteresis)
 static constexpr double kSectorHalfAngle = 0.35; // [rad] +/- forward sector (~20 deg)
 static constexpr double kScanTimeout = 0.5;      // [s] /scan older than this -> perception stale
+// MEASURED 2026-07-28, rover parked square against a flat wall with zero gap:
+// the forward-sector min range read 0.337 m over 178 consecutive scans with no
+// spread (min == max == 0.337). That is the scan origin -> bumper distance.
+// Agrees with the 0.345 m base_link -> front-plate-tip figure in
+// docs/rover_autonav_requirements.md to within 8 mm. Re-measure the same way if
+// the camera is ever remounted — this constant is what makes the distances below
+// mean bumper clearance rather than lens clearance.
+static constexpr double kFrontOverhang = 0.337;  // [m] scan origin -> front bumper
+// While blocked, yaw is capped rather than freed: enough authority to turn away,
+// not enough to lunge. An asymmetric skid-steer spin TRANSLATES, which is how an
+// ungated yaw leg reached the wall despite the forward brake working correctly.
+static constexpr double kBlockedYawRate = 0.3;   // [rad/s] max |yaw| while blocked
 
 class AutoNavMode : public px4_ros2::ModeBase {
  public:
@@ -42,6 +61,8 @@ class AutoNavMode : public px4_ros2::ModeBase {
     _clear_distance = node.declare_parameter<double>("collision.clear_distance", kClearDistance);
     _sector_half = node.declare_parameter<double>("collision.sector_half_angle", kSectorHalfAngle);
     _scan_timeout = node.declare_parameter<double>("collision.scan_timeout", kScanTimeout);
+    _front_overhang = node.declare_parameter<double>("collision.front_overhang", kFrontOverhang);
+    _blocked_yaw_rate = node.declare_parameter<double>("collision.blocked_yaw_rate", kBlockedYawRate);
     // When /scan is stale/absent: true = fail-safe (block forward, no blind driving),
     // false = permit forward with no perception (drivetrain-only bench runs).
     _require_scan = node.declare_parameter<bool>("collision.require_scan", true);
@@ -60,10 +81,12 @@ class AutoNavMode : public px4_ros2::ModeBase {
         [this](sensor_msgs::msg::LaserScan::UniquePtr msg) { onScan(*msg); });
 
     RCLCPP_INFO(_node.get_logger(),
-        "AutoNav collision-stop %s: stop<%.2fm clear>%.2fm sector=+/-%.0fdeg "
-        "scan_timeout=%.2fs require_scan=%s",
-        _collision_enabled ? "ON" : "OFF", _stop_distance, _clear_distance,
-        _sector_half * 180.0 / M_PI, _scan_timeout, _require_scan ? "yes" : "no");
+        "AutoNav collision-stop %s: bumper stop<%.2fm clear>%.2fm (overhang %.3fm => raw scan "
+        "%.2fm/%.2fm) sector=+/-%.0fdeg scan_timeout=%.2fs require_scan=%s blocked_yaw<=%.2frad/s",
+        _collision_enabled ? "ON" : "OFF", _stop_distance, _clear_distance, _front_overhang,
+        _stop_distance + _front_overhang, _clear_distance + _front_overhang,
+        _sector_half * 180.0 / M_PI, _scan_timeout, _require_scan ? "yes" : "no",
+        _blocked_yaw_rate);
 
     // Passive diagnostic: reports the collision-stop decision continuously,
     // even while disarmed/inactive, so the brake can be validated on stands
@@ -96,11 +119,25 @@ class AutoNavMode : public px4_ros2::ModeBase {
     float speed = cmd_fresh ? _speed : 0.f;
     float yaw_rate = cmd_fresh ? _yaw_rate : 0.f;
 
-    // Reflex collision-stop: only ever cancels FORWARD motion. Reverse/yaw pass through.
-    if (_collision_enabled && speed > 0.f && forwardBlocked()) {
-      RCLCPP_WARN_THROTTLE(_node.get_logger(), *_node.get_clock(), 1000,
-          "collision-stop: forward blocked (front=%.2fm)", _front_min_range);
-      speed = 0.f;
+    // Reflex collision-stop. Evaluated every tick (not only when driving forward) so
+    // the hysteresis state tracks reality continuously and yaw can be capped too.
+    // Reverse always passes through so the vehicle can back off.
+    if (_collision_enabled && forwardBlocked()) {
+      if (speed > 0.f) {
+        RCLCPP_WARN_THROTTLE(_node.get_logger(), *_node.get_clock(), 1000,
+            "collision-stop: forward blocked (bumper=%.2fm raw=%.2fm)",
+            frontClearance(), _front_min_range);
+        speed = 0.f;
+      }
+      // Cap, don't cancel: a skid-steer must still be able to rotate away, but an
+      // asymmetric spin translates, so unlimited yaw next to an obstacle is a lunge.
+      const float cap = static_cast<float>(_blocked_yaw_rate);
+      if (std::abs(yaw_rate) > cap) {
+        RCLCPP_WARN_THROTTLE(_node.get_logger(), *_node.get_clock(), 1000,
+            "collision-stop: yaw capped %.2f -> %.2f rad/s (bumper=%.2fm)",
+            yaw_rate, std::copysign(cap, yaw_rate), frontClearance());
+        yaw_rate = std::copysign(cap, yaw_rate);
+      }
     }
 
     _rover_setpoint->update(speed, yaw_rate);
@@ -126,6 +163,13 @@ class AutoNavMode : public px4_ros2::ModeBase {
     _last_scan_time = _node.get_clock()->now();
   }
 
+  // Clearance at the front BUMPER, which is what the thresholds mean. Infinity
+  // (nothing seen in the sector) stays infinity.
+  float frontClearance() const
+  {
+    return _front_min_range - static_cast<float>(_front_overhang);
+  }
+
   // Hysteretic forward-block decision. Fail-safe when perception is stale.
   bool forwardBlocked()
   {
@@ -135,9 +179,10 @@ class AutoNavMode : public px4_ros2::ModeBase {
       // No trustworthy perception: fail-safe blocks forward unless explicitly permitted.
       return _require_scan;
     }
-    if (_front_min_range < _stop_distance) {
+    const float clearance = frontClearance();
+    if (clearance < _stop_distance) {
       _blocked = true;
-    } else if (_front_min_range > _clear_distance) {
+    } else if (clearance > _clear_distance) {
       _blocked = false;
     }  // between stop and clear: hold previous state
     return _blocked;
@@ -150,13 +195,13 @@ class AutoNavMode : public px4_ros2::ModeBase {
   {
     const bool scan_fresh = _last_scan_time.nanoseconds() > 0 &&
         (_node.get_clock()->now() - _last_scan_time).seconds() < _scan_timeout;
-    const bool would_block = scan_fresh ? (_front_min_range < _stop_distance)
+    const bool would_block = scan_fresh ? (frontClearance() < _stop_distance)
                                         : _require_scan;
     if (!_diag_inited || would_block != _diag_last) {
       RCLCPP_INFO(_node.get_logger(),
-          "collision-diag: %s  (scan_fresh=%s front=%.2fm)",
+          "collision-diag: %s  (scan_fresh=%s bumper=%.2fm raw=%.2fm)",
           would_block ? "BLOCK forward" : "clear",
-          scan_fresh ? "yes" : "no", _front_min_range);
+          scan_fresh ? "yes" : "no", frontClearance(), _front_min_range);
       _diag_last = would_block;
       _diag_inited = true;
     }
@@ -178,6 +223,8 @@ class AutoNavMode : public px4_ros2::ModeBase {
   double _clear_distance{kClearDistance};
   double _sector_half{kSectorHalfAngle};
   double _scan_timeout{kScanTimeout};
+  double _front_overhang{kFrontOverhang};
+  double _blocked_yaw_rate{kBlockedYawRate};
 
   // collision-stop state
   float _front_min_range{std::numeric_limits<float>::infinity()};
