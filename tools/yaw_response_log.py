@@ -20,7 +20,7 @@ import time
 
 import rclpy
 from nav_msgs.msg import Odometry
-from px4_msgs.msg import EscStatus
+from px4_msgs.msg import EscStatus, SensorCombined
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
@@ -37,12 +37,23 @@ class YawLog(Node):
                              history=HistoryPolicy.KEEP_LAST, depth=5)
         self.create_subscription(Odometry, '/odom', self.odom_cb, 10)
         self.create_subscription(EscStatus, '/fmu/out/esc_status', self.esc_cb, px4_qos)
+        # GROUND TRUTH for yaw rate. /odom's angular.z is NOT trustworthy under motion
+        # (2026-07-29: peaked at 62 rad/s, sustained 5.7 rad/s -- physically impossible),
+        # so body yaw rate is taken from the raw FC gyro instead. Note the FC does not
+        # expose vehicle_angular_velocity over DDS; sensor_combined is the available source.
+        self.create_subscription(SensorCombined, '/fmu/out/sensor_combined',
+                                 self.gyro_cb, px4_qos)
         self.rpm = [0, 0, 0, 0]
+        self.gyro_z = 0.0
         self.burst = None
         self.bursts = []
 
     def esc_cb(self, msg):
         self.rpm = [msg.esc[i].esc_rpm for i in range(4)]
+
+    def gyro_cb(self, msg):
+        # PX4 body frame is FRD (+z down), ROS is FLU (+z up) -> negate for a ROS-sense yaw rate.
+        self.gyro_z = -msg.gyro_rad[2]
 
     def odom_cb(self, msg):
         now = time.time()
@@ -52,11 +63,12 @@ class YawLog(Node):
 
         if moving:
             if self.burst is None:
-                self.burst = {'t0': now, 'wz': [], 'vx': [], 'rpm': [0, 0, 0, 0]}
+                self.burst = {'t0': now, 'wz': [], 'vx': [], 'gz': [], 'rpm': [0, 0, 0, 0]}
             b = self.burst
             b['last'] = now
             b['wz'].append(wz)
             b['vx'].append(vx)
+            b['gz'].append(self.gyro_z)
             b['rpm'] = [max(a, abs(r)) for a, r in zip(b['rpm'], self.rpm)]
         elif self.burst and now - self.burst.get('last', now) > GAP_S:
             self.close_burst()
@@ -66,15 +78,21 @@ class YawLog(Node):
         self.burst = None
         if not b or len(b['wz']) < 5:
             return
-        peak_wz = max(b['wz'], key=abs)
+        def sustained(xs):
+            """Mean of the top half by magnitude — skips the accel/decel ramps."""
+            mid = sorted(xs, key=abs)[len(xs) // 2:]
+            return sum(mid) / len(mid)
+
         peak_vx = max(b['vx'], key=abs)
-        # mean over the sustained middle half, skipping accel/decel ramps
-        mid = sorted(b['wz'], key=abs)[len(b['wz']) // 2:]
-        mean_wz = sum(mid) / len(mid)
         self.bursts.append(b)
-        print(f'burst {len(self.bursts)}: {b["last"] - b["t0"]:.1f}s  '
-              f'yaw peak={peak_wz:+.3f} sustained={mean_wz:+.3f} rad/s  '
-              f'fwd peak={peak_vx:+.3f} m/s  rpm={b["rpm"]}', flush=True)
+        line = (f'burst {len(self.bursts)}: {b["last"] - b["t0"]:.1f}s  '
+                f'fwd peak={peak_vx:+.3f} m/s  rpm={b["rpm"]}')
+        if b['gz']:
+            line += (f'\n    yaw GYRO  peak={max(b["gz"], key=abs):+.3f} '
+                     f'sustained={sustained(b["gz"]):+.3f} rad/s   <-- ground truth')
+        line += (f'\n    yaw /odom peak={max(b["wz"], key=abs):+.3f} '
+                 f'sustained={sustained(b["wz"]):+.3f} rad/s   (suspect, see gyro_cb)')
+        print(line, flush=True)
 
 
 def main():

@@ -78,10 +78,30 @@ Two questions the baseline answers:
 | | | | | | | |
 | | | | | | | |
 
-Achieved body yaw rate was NOT captured on the baseline — `l2_test.py` does not record it, so
-commanded-vs-achieved (the number that decides whether the gains are actually too hot, as opposed to
-skid-steer scrub genuinely costing that much) is still unmeasured. `tools/yaw_response_log.py` was
-added for this: run it alongside `l2_test.py --live`, it commands nothing and only listens.
+## 🔴 2026-07-29 — ACHIEVED YAW RATE MEASURED. STOP: the yaw loop is not controlling.
+
+`tools/yaw_response_log.py` (passive; run alongside `l2_test.py --live`) captured the missing number.
+
+| Commanded | Raw gyro sustained | Raw gyro peak | `/odom` sustained | Observed by eye |
+|---|---|---|---|---|
+| **0.3 rad/s** | **5.70 rad/s** | **8.02 rad/s** | 7.28 rad/s | **~2 full turns in 2 s ≈ 6.3 rad/s** |
+
+**≈21× the command, and ≈4× past the FC's own `RO_YAW_RATE_LIM` of 1.57 rad/s.** Three independent
+sources agree, including the operator watching it. This is **not a gain-trim problem** — a rate loop
+that overshoots its own hard limit fourfold is not regulating at all.
+
+⛔ **Do not run armed yaw tests until this is understood.** It is also the mechanism behind the
+2026-07-28 wall contact: this is what "yaw translates" really means at 6 rad/s.
+
+Measure yaw rate from **`sensor_combined.gyro_rad[2]`** (99.6 Hz, −0.004 rad/s at rest; negate for ROS
+FLU sense). `vehicle_angular_velocity` is not in this FC's `dds_topics.yaml`.
+
+### Second bug found the same way: `erpm_to_ms` is ≥2.3× too small
+`src/rover_odometry/config/rover_odometry.yaml:12` = `0.000380`. Back-calculated from the confirmed
+6.28 rad/s spin (0.31 m track ⇒ ~0.97 m/s per side at ~1090 ERPM) the true scale is **≈0.00089**, and
+slip only pushes that higher. It explains forward reading **0.081 m/s against 0.2 m/s commanded**.
+This contaminates `/odom` → EKF2 EV velocity → and Nav2/slam_toolbox at L5.
+**Fix it by measurement, not algebra: drive a tape-measured 2 m straight and compare `/odom`'s travel.**
 
 ## ⚠️ 2026-07-28 — WALL CONTACT during the baseline run. Read before the next floor run.
 
