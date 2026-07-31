@@ -74,6 +74,16 @@ STARTUP_GRACE_S = 30.0    # opening the camera and decoding frame 1 can be slow
 STATS_PERIOD_S = 1        # ffmpeg -stats_period: progress blocks per second
 KILL_GRACE_S = 5.0        # SIGTERM -> SIGKILL escalation
 
+# Throughput floor (see check_ffmpeg). The stall check above only catches a
+# *frozen* counter. On 2026-07-31 ffmpeg lost a CPU race to the rover stack,
+# fell permanently behind and delivered ~1/30th of its normal rate for over an
+# hour while still ticking the counter over in bursts — so nothing fired and
+# nothing was logged. Healthy here is ~60 fps encoded; the collapse sat near
+# 2 fps, so the floor has a wide margin either side.
+RATE_FLOOR_FPS = 5.0      # sustained encode rate below this = collapsed
+RATE_WINDOW_S = 20.0      # averaging window; must exceed the ~14s burst cycle
+RATE_GRACE_S = 30.0       # don't judge rate until the stream has settled
+
 
 class VisionStreamingNode(Node):
     """
@@ -133,6 +143,10 @@ class VisionStreamingNode(Node):
         self.last_frame = -1
         self.saw_frames = False
         self.last_progress_at = 0.0
+
+        # throughput-floor state (see check_ffmpeg)
+        self.rate_ref_frame = -1
+        self.rate_ref_at = 0.0
 
         self.start_streaming()
         self.watchdog = self.create_timer(WATCHDOG_PERIOD_S, self.check_ffmpeg)
@@ -219,7 +233,13 @@ class VisionStreamingNode(Node):
         self.saw_frames = False
         self.started_at = time.monotonic()
         self.last_progress_at = self.started_at
+        self.reset_rate_window(self.started_at)
         self.get_logger().info("FFmpeg process started.")
+
+    def reset_rate_window(self, now):
+        """Re-anchor the throughput window at the current frame count."""
+        self.rate_ref_frame = self.last_frame
+        self.rate_ref_at = now
 
     def schedule_restart(self):
         self.ffmpeg_process = None
@@ -325,6 +345,34 @@ class VisionStreamingNode(Node):
             if runtime > STABLE_RUNTIME_S:
                 self.backoff_s = BACKOFF_INITIAL_S
             self.schedule_restart()
+            return
+
+        # Alive and advancing — but fast enough? A throughput collapse keeps
+        # the counter moving (in bursts), so the stall check above never sees
+        # it. Judge the *rate* over a window wider than the burst period.
+        if not self.saw_frames or runtime < RATE_GRACE_S:
+            self.reset_rate_window(now)
+            return
+
+        elapsed = now - self.rate_ref_at
+        if elapsed < RATE_WINDOW_S:
+            return
+
+        fps = (self.last_frame - self.rate_ref_frame) / elapsed
+        self.reset_rate_window(now)
+        if fps >= RATE_FLOOR_FPS:
+            return
+
+        self.get_logger().error(
+            f"FFmpeg alive but only {fps:.1f} fps over the last {elapsed:.0f}s "
+            f"(floor {RATE_FLOOR_FPS:.0f} fps) after {runtime:.0f}s — throughput "
+            f"collapse, not a stall. Usually means the encoder lost a CPU race "
+            f"and never caught up; killing and restarting.")
+        self.kill_ffmpeg()
+        # Deliberately NOT resetting the backoff here, unlike the paths above:
+        # a long run that ends degraded has not earned a fast retry, and under
+        # sustained CPU pressure resetting would restart-loop every ~60s.
+        self.schedule_restart()
 
     def calculate_overlay_position(self):
         if self.pip_position == "bottom-right":
