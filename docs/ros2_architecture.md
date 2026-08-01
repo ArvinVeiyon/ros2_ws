@@ -27,9 +27,11 @@ firmware source. Getting the pxlabs fork checked out on the companion would enab
 PX4 fmu-v6xrt ◄─uXRCE-DDS ttyAMA4─► microxrce-agent ─► /fmu/in|out/* topics
   tfmini_node ──────────────► /fmu/in/distance_sensor        (TFmini ttyAMA2, 50Hz)
   obstacle_distance_publisher ► /fmu/in/obstacle_distance    (VL53L1X I2C, 10Hz, front 0–25°)
+                                                             ⚠️ NOT RUNNING — sensor not mounted (2026-08-01)
   optical_flow_node ─────────► /fmu/in/sensor_optical_flow   (manual launch only)
   rc_control_node ◄──────────  /fmu/out/input_rc             (cam switch CH9, shutdown CH10)
   rov_collision_stop ◄───────  VL53L1X                       (emergency stop, C++)
+                                                             ⚠️ NOT RUNNING — sensor not mounted (2026-08-01)
   vision_streaming_node ─────► RTP→WFB→GS                    (FPV, ffmpeg — NOT autonomy path)
 ```
 
@@ -72,7 +74,8 @@ Nav2 ─cmd_vel─► nav2_px4_bridge (px4_ros2 custom mode "AutoNav") ─► /f
 | `vehicle_visual_odometry` | **`rover_ekf_bridge` (L3)** | ✅ **in use** — EV velocity aiding. Note: EKF2 drops the whole sample unless the velocity vector is all-finite, and the lib NaN-fills unset fields → `velocity_z` must be sent (0 for a ground rover) |
 | `trajectory_setpoint`, `goto_setpoint` | fallback control path | ✅ exposed |
 | `register_ext_component_request`, `config_overrides_request`, `arming_check_reply_v1`, `mode_completed`, `vehicle_command`, `offboard_control_mode` | px4_ros2 lib internals | ✅ exposed |
-| `distance_sensor`, `obstacle_distance`, `sensor_optical_flow` | existing sensor nodes | ✅ in use today |
+| `distance_sensor`, `sensor_optical_flow` | existing sensor nodes | ✅ in use today |
+| `obstacle_distance` | VL53L1X | 🔴 **NOT RUNNING — sensor not mounted (2026-08-01)** |
 
 ## 4. M4 bridge design note (updated by today's findings)
 

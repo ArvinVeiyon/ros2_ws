@@ -62,7 +62,7 @@ Orbbec 336L ──USB3──► OrbbecSDK_ROS2 ─depth─► depthimage_to_lase
   color is locked for future vision — autonomy uses **depth stream only**, never ffmpeg, per camera rule).
 - Depth 640×400 @ 15 Hz → `depthimage_to_laserscan` (apt, installed) → `/scan` for costmap + SLAM.
   3D/voxel layer deferred (CPU budget).
-- Coverage: forward ~90° H only + VL53L1X front ToF. **Planner must never command reverse into unseen
+- Coverage: forward ~90° H only. (⚠️ the VL53L1X front ToF referenced here is **NOT MOUNTED** as of 2026-08-01 — see R5.) **Planner must never command reverse into unseen
   space**: Nav2 configured with no reverse velocities; recovery behaviors limited to in-place rotation
   (skid-steer can turn on the spot) and forward re-plan.
 
@@ -99,7 +99,17 @@ Orbbec 336L ──USB3──► OrbbecSDK_ROS2 ─depth─► depthimage_to_lase
 
 ### R5 — Safety (non-negotiable, each independently)
 1. RC mode switch out of AutoNav = instant manual authority (PX4-native, no companion code in path).
-2. `rov_collision_stop` (existing C++ node, VL53L1X) stays active as last-line forward e-stop, independent of Nav2.
+2. ~~`rov_collision_stop` (existing C++ node, VL53L1X) stays active as last-line forward e-stop, independent of Nav2.~~
+   🔴 **NOT TRUE as of 2026-08-01: the VL53L1X is NOT MOUNTED.** `rov_collision_stop` and
+   `obstacle_distance` are built but not running, have no systemd units, and no live nodes.
+   **There is no independent last-line e-stop.** The only reflex is the one inside `autonav_mode`'s
+   executor, which runs off the depth camera — same sensor, same computer, so it is NOT independent.
+   This is acceptable now: the depth camera has no forward blind strip (its 0.308 m near limit sits
+   inside the bumper), and `collision.require_scan=true` blocks forward motion when perception is
+   stale, so a camera failure stops the rover rather than blinding it.
+   **It becomes a real gap at L3 ("operator leaves the room")**, where an FC-side layer that survives
+   a companion-computer crash is worth having — `/fmu/in/obstacle_distance` feeds PX4's own collision
+   prevention and is the only layer that would survive it.
 3. Bridge watchdogs: `cmd_vel` older than 500 ms → zero setpoint; depth/`/scan` older than 1 s → controlled stop.
 4. Nav2 costmap keeps ≥ 0.5 m stopping buffer at max speed.
 5. Disarm on companion crash: PX4 offboard timeout behavior verified in M4 bench test.

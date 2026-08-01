@@ -174,3 +174,26 @@ Change a number above and these must all be revisited:
 **Lesson recorded 2026-08-01:** the stale `0.405 m` plate width survived in two shipped files for a
 week after being superseded. When a measured dimension changes, grep the tree for the **old value**,
 not just the name of the thing.
+
+---
+
+## 7. Sensors that are NOT on the vehicle
+
+Recorded here because the architecture docs described one of these as a live safety layer.
+
+| Sensor | Status 2026-08-01 | Consequence |
+|---|---|---|
+| **VL53L1X front ToF** | **NOT MOUNTED.** `obstacle_distance` and `rov_collision_stop` are built but not running; no systemd units, no live nodes. | **There is no independent last-line e-stop.** The only reflex is inside `autonav_mode`'s executor, off the depth camera — same sensor, same computer, so *not* independent. |
+| **STL-19 360° lidar** | With another team | No coverage behind or beside; never clear a spin from the depth `/scan` |
+
+**Why not mounting the VL53L1X is acceptable today:**
+1. It would cover the depth camera's near blind zone, but **that blind zone is not in front of the
+   rover** — `cam_x = 0` puts the 0.308 m min-range circle 37 mm *inside* the bumper (§4).
+2. Where it does look it is strictly weaker: 0-25° single beam at 10 Hz, against a 92° height-aware
+   fan at ~29 Hz.
+3. `collision.require_scan = true` makes perception loss **fail safe** — a stale scan blocks forward
+   motion, so a dead camera stops the rover rather than blinding it.
+
+**When it starts to matter — L3, "operator leaves the room."** `/fmu/in/obstacle_distance` feeds PX4's
+own collision prevention **on the flight controller**, so it is the only layer that would survive a
+companion-computer crash. Everything else — the executor reflex, Nav2 — dies with the Pi.
