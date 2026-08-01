@@ -1,0 +1,260 @@
+# Nav2 — FORWARD-ONLY autonomy on the Gemini 336L depth camera alone (no lidar).
+#
+# This config is deliberately narrow. It is not a general Nav2 setup that has
+# been trimmed; it is built around three hard facts about this sensor, and every
+# unusual value below traces back to one of them.
+#
+#   1. The camera sees 92 deg (-46..+46). There is NO rear or side sensing at
+#      all. Anything the rover has not driven past is unknown, and anything it
+#      HAS driven past is remembered rather than observed -- stale the moment
+#      something moves.
+#   2. range_min is 0.30 m, and the front bumper sits 0.337 m ahead of the scan
+#      origin. There is a blind collar right at the nose.
+#   3. /scan is a single horizontal SLICE of the depth image, not a 3D cloud.
+#      Table tops, overhangs, thresholds and cables are invisible unless they
+#      intersect that one band.
+#
+# Consequences, which are the whole reason this file differs from stock Nav2:
+#   * NO SLAM and NO map frame. Both costmaps run in `odom` with rolling
+#     windows. Goals are short and ahead. Odom drift is irrelevant over a few
+#     metres and this removes a whole subsystem that a 92 deg scan would do
+#     badly anyway (scan matching needs wide FOV).
+#   * SPIN and BACK_UP recoveries are REMOVED, not merely discouraged. Both
+#     drive the rover through space it has never observed. With no rear sensor
+#     they are the single most likely way to hit something.
+#   * Reverse is forbidden (min_vel_x = 0.0) for the same reason.
+#
+# CPU: this Pi 5 has 4 cores already carrying camera + scan + odometry, and the
+# stack has a documented starvation failure mode. Frequencies here are well
+# below Nav2 defaults on purpose. DWB is chosen over MPPI for the same reason --
+# MPPI's sampling is far more expensive and there is no headroom for it.
+
+bt_navigator:
+  ros__parameters:
+    global_frame: odom          # NOT map -- there is no SLAM in this config
+    robot_base_frame: base_link
+    odom_topic: /odom
+    bt_loop_duration: 10
+    default_server_timeout: 20
+    navigators: ["navigate_to_pose"]
+    navigate_to_pose:
+      plugin: "nav2_bt_navigator::NavigateToPoseNavigator"
+
+controller_server:
+  ros__parameters:
+    # 10 Hz, not the stock 20 -- CPU headroom on a 4-core Pi already running
+    # the camera, depth->scan and odometry.
+    controller_frequency: 10.0
+    min_x_velocity_threshold: 0.005
+    min_y_velocity_threshold: 0.5     # differential drive: no lateral motion
+    min_theta_velocity_threshold: 0.01
+    failure_tolerance: 0.3
+    progress_checker_plugins: ["progress_checker"]
+    goal_checker_plugins: ["general_goal_checker"]
+    controller_plugins: ["FollowPath"]
+
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.30
+      movement_time_allowance: 15.0
+
+    general_goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.20
+      # Loose yaw tolerance on purpose: tightening it makes the rover rotate in
+      # place at the goal to "finish", which is exactly the blind manoeuvre this
+      # config exists to avoid.
+      yaw_goal_tolerance: 0.50
+      stateful: True
+
+    FollowPath:
+      plugin: "dwb_core::DWBLocalPlanner"
+      debug_trajectory_details: True
+
+      # Speed limits use REAL m/s. They only became meaningful on 2026-08-01,
+      # when erpm_to_ms was corrected by 12.2x -- before that /odom under-read
+      # so badly that any limit compared against it permitted far more speed
+      # than intended.
+      min_vel_x: 0.0            # NO REVERSE -- nothing sees behind the rover
+      max_vel_x: 0.25
+      max_speed_xy: 0.25
+      min_speed_xy: 0.0
+      min_vel_y: 0.0
+      max_vel_y: 0.0
+      # Yaw is kept modest because the FC yaw-rate loop is still under
+      # investigation (it ran ~21x command on 2026-07-29). RO_YAW_RATE_P is at
+      # 0.05 which heavily de-risks it, but this is not yet a trusted axis.
+      max_vel_theta: 0.5
+      min_speed_theta: 0.0
+      acc_lim_x: 0.5
+      acc_lim_theta: 1.0
+      decel_lim_x: -0.5
+      decel_lim_theta: -1.0
+
+      vx_samples: 12
+      vy_samples: 1
+      vtheta_samples: 20
+      sim_time: 2.0
+      linear_granularity: 0.05
+      angular_granularity: 0.025
+      transform_tolerance: 0.3
+      short_circuit_trajectory_evaluation: True
+
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign",
+                "PathAlign", "PathDist", "GoalDist"]
+      BaseObstacle.scale: 0.02
+      PathAlign.scale: 32.0
+      PathAlign.forward_point_distance: 0.20
+      GoalAlign.scale: 24.0
+      GoalAlign.forward_point_distance: 0.20
+      PathDist.scale: 32.0
+      GoalDist.scale: 24.0
+      RotateToGoal.scale: 32.0
+      RotateToGoal.slowing_factor: 5.0
+      RotateToGoal.lookahead_time: -1.0
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      update_frequency: 5.0
+      publish_frequency: 2.0
+      global_frame: odom
+      robot_base_frame: base_link
+      rolling_window: true
+      width: 4
+      height: 4
+      resolution: 0.05
+      # Circular footprint = half-diagonal of the 0.43 m wheelbase x 0.405 m top
+      # plate (0.295 m), rounded up. A circle rather than a rectangle because a
+      # skid-steer rotates about its centre and sweeps that circle anyway.
+      # NOTE the plate (0.405) is the width that matters, NOT the 0.31 m track --
+      # the wheels sit inboard of the body.
+      robot_radius: 0.30
+      plugins: ["obstacle_layer", "inflation_layer"]
+
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        # footprint_clearing_enabled matters more than usual here: with a 92 deg
+        # FOV the rover cannot re-observe cells beside itself, so without this a
+        # spurious reading next to the body would persist and trap it.
+        footprint_clearing_enabled: True
+        observation_sources: scan
+        scan:
+          topic: /scan
+          sensor_frame: camera_link
+          data_type: "LaserScan"
+          clearing: True
+          marking: True
+          # Kept inside the camera's usable band. range_max is 5.0 m but depth
+          # quality falls off well before that.
+          obstacle_max_range: 3.5
+          obstacle_min_range: 0.0
+          raytrace_max_range: 4.0
+          raytrace_min_range: 0.0
+          max_obstacle_height: 2.0
+          min_obstacle_height: 0.0
+          inf_is_valid: False
+
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        enabled: True
+        cost_scaling_factor: 3.0
+        # Generous relative to the 0.30 m radius: the blind collar inside 0.30 m
+        # means the rover cannot see an obstacle it is about to touch, so the
+        # margin has to be carried in the costmap instead of the sensor.
+        inflation_radius: 0.55
+
+      always_send_full_costmap: True
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      # Rolling window in `odom`, NOT a static map. Without SLAM there is no
+      # map->odom transform, so the "global" planner is really a medium-range
+      # local planner. That is the correct scope for a forward-only test.
+      update_frequency: 2.0
+      publish_frequency: 1.0
+      global_frame: odom
+      robot_base_frame: base_link
+      rolling_window: true
+      width: 12
+      height: 12
+      resolution: 0.05
+      robot_radius: 0.30
+      track_unknown_space: false   # unknown treated as free: with 92 deg FOV
+                                   # almost everything is unknown, and treating
+                                   # it as lethal would refuse every plan
+      plugins: ["obstacle_layer", "inflation_layer"]
+
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        footprint_clearing_enabled: True
+        observation_sources: scan
+        scan:
+          topic: /scan
+          sensor_frame: camera_link
+          data_type: "LaserScan"
+          clearing: True
+          marking: True
+          obstacle_max_range: 3.5
+          obstacle_min_range: 0.0
+          raytrace_max_range: 4.0
+          raytrace_min_range: 0.0
+          max_obstacle_height: 2.0
+          min_obstacle_height: 0.0
+          inf_is_valid: False
+
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        enabled: True
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.55
+
+      always_send_full_costmap: True
+
+planner_server:
+  ros__parameters:
+    expected_planner_frequency: 1.0    # low: short goals, and CPU is scarce
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "nav2_navfn_planner::NavfnPlanner"
+      tolerance: 0.30
+      use_astar: false
+      allow_unknown: true              # must be true -- see track_unknown_space
+
+behavior_server:
+  ros__parameters:
+    local_costmap_topic: local_costmap/costmap_raw
+    local_footprint_topic: local_costmap/published_footprint
+    global_costmap_topic: global_costmap/costmap_raw
+    global_footprint_topic: global_costmap/published_footprint
+    cycle_frequency: 10.0
+    # SPIN and BACK_UP ARE DELIBERATELY ABSENT.
+    # Stock Nav2 lists ["spin","backup","drive_on_heading","wait"]. Both spin and
+    # backup move the rover through space no sensor on this vehicle has ever
+    # observed. With a 92 deg forward-only camera they are not recoveries, they
+    # are collisions waiting for a trigger. Restore them only when there is
+    # rear/side sensing (STL-19).
+    behavior_plugins: ["wait"]
+    wait:
+      plugin: "nav2_behaviors::Wait"
+    local_frame: odom
+    global_frame: odom
+    robot_base_frame: base_link
+    transform_tolerance: 0.3
+
+velocity_smoother:
+  ros__parameters:
+    smoothing_frequency: 10.0
+    scale_velocities: False
+    feedback: "OPEN_LOOP"
+    # Publishes geometry_msgs/Twist on /cmd_vel, which is exactly what
+    # autonav_mode subscribes to -- no adapter needed on Nav2 1.3.12.
+    max_velocity: [0.25, 0.0, 0.5]
+    min_velocity: [0.0, 0.0, -0.5]     # x floor 0.0 => reverse stays forbidden
+    max_accel: [0.5, 0.0, 1.0]
+    max_decel: [-0.5, 0.0, -1.0]
+    odom_topic: "/odom"
+    odom_duration: 0.1
