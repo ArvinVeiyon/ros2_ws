@@ -59,14 +59,31 @@ static constexpr double kFrontOverhang = 0.337;  // [m] scan origin -> front bum
 // Full derivation and the consumer list: docs/rover_geometry.md.
 static constexpr double kFootprintFront = 0.345;      // [m] base_link -> front plate tip
 static constexpr double kFootprintHalfWidth = 0.225;  // [m] half of the 0.450 m plate
-// Grown slightly before the reject test: the plate's own edges lie EXACTLY on the
-// footprint boundary, so a bare strict inequality lets the edge itself leak
-// through as an obstacle (observed 2026-08-01 at bearing 35 deg / range 0.392 m,
-// which is precisely where the side edge sits). This also absorbs static-TF and
-// measurement error, which is ~1 cm on front_overhang. Cost: a real obstacle
-// within 20 mm of the bodywork is ignored -- acceptable, since the reflex already
-// blocks at 350 mm of bumper clearance and could never legitimately be there.
-static constexpr double kFootprintMargin = 0.02;      // [m]
+// Grown before the reject test, for two reasons.
+//
+// 1. The plate's own edges lie EXACTLY on the footprint boundary, so a bare strict
+//    inequality lets the edge itself leak through as an obstacle (observed at
+//    bearing 35 deg / range 0.392 m, precisely where the side edge sits). It also
+//    absorbs static-TF and measurement error, ~1 cm on front_overhang.
+//
+// 2. MIXED PIXELS AT THE PLATE EDGE. The depth camera interpolates across the
+//    discontinuity between the deck edge and the distant floor, producing points
+//    that belong to NEITHER surface. Confirmed visually 2026-08-01: flush with the
+//    plate edge, nothing physically there. They are NOT removable by filtering:
+//      - the SDK's DispOutliersFilter and FalsePositiveFilter are NOT SUPPORTED by
+//        this device; TemporalFilter and SpatialAdvancedFilter were measured and
+//        changed nothing (38.6 +/-7.3 baseline vs 41.0 +/-14.3 and 32.1 +/-9.8);
+//      - a temporal-persistence test does not discriminate either, because these
+//        beams are present in EVERY frame and merely jitter in range.
+//    They are, however, BOUNDED. Measured extent past the 0.345 m edge:
+//        x 0.35-0.40  71 pts   |   x 0.40-0.50  ZERO   |   x 0.50+ unrelated
+//    so 0.06 clears the skirt with a 10 cm clean gap beyond it.
+//
+// COST of 0.06: blind from 0.345 to 0.405 m, i.e. the first 60 mm past the bumper.
+// Operationally irrelevant for this reflex, which blocks at 0.35 m of bumper
+// clearance (x = 0.687) and so has already stopped long before anything reaches
+// 0.405 m. It matters only if the vehicle is placed inside its own stop distance.
+static constexpr double kFootprintMargin = 0.06;      // [m]
 // While blocked, yaw is capped rather than freed: enough authority to turn away,
 // not enough to lunge. An asymmetric skid-steer spin TRANSLATES, which is how an
 // ungated yaw leg reached the wall despite the forward brake working correctly.
