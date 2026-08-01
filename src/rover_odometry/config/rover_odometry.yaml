@@ -6,17 +6,45 @@ wheel_odometry_node:
     wheel_addresses: [10, 11, 12, 13]
     wheel_signs: [-1.0, 1.0, 1.0, 1.0]   # only addr 10 reports inverted ERPM
 
-    # Conversion — verified against live VESC data 2026-05-30
-    # ERPM -> m/s = pi * wheel_diameter / (pole_pairs * gear_ratio * 60)
-    #             = pi * 0.1524 / (7 * 3 * 60)
-    erpm_to_ms: 0.000380
+    # MEASURED 2026-08-01 — was 0.000380, which was ~12.2x TOO SMALL.
+    #
+    # The old value came from assumed geometry, pi*0.1524/(7*3*60), i.e. 6"
+    # wheels, 7 pole pairs, 3:1 gearing => pole_pairs*gear_ratio = 21. Measured
+    # directly, that product is ~1.75, not 21, so the assumed drivetrain is
+    # simply not this drivetrain.
+    #
+    # Method: the rover was pushed BY HAND through exactly 5 counted wheel
+    # revolutions while integrating ERPM from /fmu/out/esc_status. A hand push
+    # has no wheel slip and needs no tape measure, and the wheel diameter
+    # cancels out of the ratio entirely:
+    #     pole_pairs * gear_ratio = ERPM_seconds / (60 * revolutions)
+    #                             = 516.7 / (60 * 5) = 1.722
+    #     erpm_to_ms = 5 * pi * 0.1524 / 516.7 = 0.004633
+    # A powered 2.13 m tape-measured drive agreed independently at 1.788 /
+    # 0.004463 (it carries tape error and a little slip, both of which bias it
+    # low), so the two methods agree to within 4%.
+    #
+    # The earlier ">=2.3x low" estimate was derived from a skid-steer spin and
+    # was only ever a LOWER bound -- scrub makes wheels turn far more than the
+    # achieved rotation implies. The real slip factor in that spin was ~5x.
+    # Tool: tools/odom_scale_measure.py --revs 5
+    erpm_to_ms: 0.004633
     # MEASURED 2026-07-21: 0.31 m, left hub centre to right hub centre.
     # Was 0.43 until then -- that figure is the WHEELBASE (front hub to rear hub),
     # not the track, and it under-reported every yaw rate by ~28% (0.31/0.43).
     track_width: 0.31            # m, LEFT-to-RIGHT wheel center distance
 
-    # Idle Hall-sensor jitter measured up to +/-35 ERPM (2026-07-19)
-    deadband_erpm: 40.0
+    # RE-MEASURED 2026-08-01 — was 40.0, which is far too coarse now.
+    # 40 ERPM was chosen when the scale was believed to be 0.000380, making it a
+    # harmless 0.015 m/s. At the real 0.004633 the SAME 40 ERPM is 0.185 m/s --
+    # it would have silently swallowed most of the speed range Nav2 uses for
+    # fine positioning, while looking like a sensible noise gate.
+    # Standstill noise re-measured at 2930 samples per wheel, all four wheels:
+    # min 0, max 0, i.e. NO jitter at all. The "+/-35 ERPM" note from 2026-07-19
+    # does not reproduce. 5 ERPM (0.023 m/s) keeps a token guard.
+    # ⚠️ Re-check this ARMED — motors dithering to hold position may inject
+    # jitter that idle disarmed motors do not.
+    deadband_erpm: 5.0
 
     # Staleness: per-ESC sample older than this is treated as missing
     esc_timeout: 0.30            # s
