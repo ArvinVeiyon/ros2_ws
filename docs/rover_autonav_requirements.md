@@ -70,7 +70,8 @@ Orbbec 336L ──USB3──► OrbbecSDK_ROS2 ─depth─► depthimage_to_lase
 - Global: planner server (NavFn/Smac 2D) on slam_toolbox map → auto-routing A→B.
 - Local: controller server (start DWB; evaluate MPPI later) + local costmap (rolling, 4×4 m, obstacle
   layer from `/scan`, inflation ≥ rover half-width 0.30 m + margin).
-- Footprint: rectangle of real chassis — **re-measured 2026-07-26 (supersedes 07-21): wheelbase
+- Footprint: rectangle of real chassis. **→ `docs/rover_geometry.md` is the authoritative source for
+  every dimension below and for the camera mount; keep them in sync.** Re-measured 2026-07-26 (supersedes 07-21): wheelbase
   0.43 m (front hub to rear hub), track 0.31 m (left hub to right hub), top plate 0.730 m long ×
   **0.450 m wide** (07-21 said 0.405 — wrong), ground to top plate **0.235 m** (07-21 said 0.180 —
   wrong; the 0.42 m camera height was a direct measure to the lens, so the old mast stood 0.185 m

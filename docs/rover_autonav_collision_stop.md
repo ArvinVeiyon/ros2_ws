@@ -1,5 +1,8 @@
 # Rover AutoNav — Reflex Collision-Stop & Arming Workflow
 
+> **Dimensions and camera-mount geometry live in [`rover_geometry.md`](rover_geometry.md)** —
+> `front_overhang`, the corridor half-width and the plate width all come from there.
+
 Date: 2026-07-23 | Status: **implemented + validated on floor** | Owner: roz
 Relates to: `rover_autonav_requirements.md` (R3 safety envelope, R5 watchdog), autonomy roadmap **phase 2 (collision stop)**
 
