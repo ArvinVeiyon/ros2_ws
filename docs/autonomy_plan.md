@@ -52,6 +52,11 @@ We have configured a 3D sensor to imitate a mediocre 2D lidar and then judged it
 **Fix is configuration, not hardware:** enable the point cloud, add a Nav2 `voxel_layer`.
 
 ### 2.2 ⚠️ Correction: indoor mapping does NOT require the lidar
+> **→ The concrete plan, measured costs and next steps now live in
+> [`indoor_mapping_plan.md`](indoor_mapping_plan.md).** Mapping runs OFFLINE on a laptop; the Pi
+> records a bag and later does localization only. Drive the run in MANUAL — it bypasses the yaw rate
+> loop, so mapping is **not** blocked on #20, but there is **no collision reflex in Manual.**
+
 An earlier claim that "mapping the house needs the STL-19" was **over-generalised and
 is withdrawn**. What is true: **`slam_toolbox` needs it**, because it does 2D scan
 matching and 92 deg of view gives too little overlap.
