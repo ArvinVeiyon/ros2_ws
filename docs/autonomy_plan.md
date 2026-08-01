@@ -252,3 +252,157 @@ S1+S2 safety ─▶ T1/T2 prove M2 ─▶ enable point cloud + voxel layer (A5)
 2. S3 yaw loop — unknown open/closed; gates every turning test.
 3. Point cloud + voxel layer — unlocks the camera's actual capability.
 4. Failsafe policy decisions (`NAV_RCL_ACT`, lost-localization, no-route) — design, no hardware.
+
+---
+
+# APPENDIX A — The autonomy layers, concretely
+
+Added 2026-08-01 after a fair challenge: "nowhere do I see any autonomy, these are
+all existing features, the only question is where we run the mission."
+
+That is correct, and it is the most important framing in this document.
+**Waypoint following and threshold-based obstacle stopping are AUTOMATION, not
+autonomy.** Every one of them is a fixed response to a fixed input. A vehicle that
+follows waypoints and stops for obstacles is a train with a bumper.
+
+The layers below separate what we CONFIGURE (L0/L1, mostly existing software) from
+what we must WRITE (L2-L5, which does not exist off the shelf).
+
+---
+
+## L0 — PLUMBING ✅ done
+**"The rover does what it is told."**
+
+| Component | Status |
+|---|---|
+| `rover_odometry`: ERPM -> `/odom` + TF | ✅ (scale fixed 2026-08-01) |
+| `rover_ekf_bridge`: `/odom` -> EKF2 EV velocity | ✅ |
+| `depthimage_to_laserscan`: depth -> `/scan` | ✅ (but see 2.1 — wasteful) |
+| `autonav_mode`: `/cmd_vel` -> PX4 rover setpoints | ✅ |
+| Arm workflow, kill switch, watchdogs | ✅ (kill untested in AutoNav) |
+
+**Contract:** give it a velocity, it drives. Nothing decides anything.
+
+---
+
+## L1 — AUTOMATION 🔧 in progress
+**"The rover goes where it is told, without hitting what it can see."**
+
+| Build | New? |
+|---|---|
+| Nav2 costmaps + planner + controller (`rover_nav2`) | config, written |
+| **Point cloud + `voxel_layer`** — stop flattening 3D to 2D | **config, TODO** |
+| Waypoint sequencer — drive a LIST of goals, not one | **small new node** |
+| Collision reflex inside the executor | ✅ exists |
+
+**Inputs:** goal pose. **Outputs:** `/cmd_vel`. **Decisions made: none.**
+**Test:** T1-T5 in section 7.
+
+⚠️ **Finishing L1 does not give an autonomous rover.** It gives a remotely-commanded
+rover that does not crash. Its value is that L2-L5 have nothing to stand on without it.
+
+---
+
+## L2 — SELF-AWARENESS ❌ not started — *mandatory for unattended operation*
+**"The rover knows when it does not know."**
+
+Today the rover drives with identical conviction whether it is perfectly localized or
+completely lost. That is the difference between a demo and something you leave running.
+
+**Build: a health/confidence monitor node publishing `/rover_health`.**
+
+| Watches | Signal | Why (learned the hard way) |
+|---|---|---|
+| Localization | `eph`, `xy_valid`, `dead_reckoning`, SLAM covariance | `eph` grew to 682 m on 07-28 and nothing noticed |
+| Odometry sanity | commanded vs achieved velocity; `esc_online_flags` | ESC doze silenced `/odom`; scale was 12.2x wrong for weeks |
+| Perception | `/scan` rate, sector coverage %, empty-scan count, staleness | 79.7% coverage looked fine, was aimed at open room |
+| Compute | CPU load, per-node liveness, topic rates | CPU starvation latched ffmpeg silently for >1 h |
+| Actuation | does commanded motion produce expected motion | yaw ran 21x command and only a human noticed |
+| Power | battery voltage, ESC current | — |
+
+**Output:** per-subsystem status + one overall level — `OK / DEGRADED / UNSAFE` — **with
+a reason string**. Never a bare boolean.
+
+**Test:** inject each fault deliberately (stop `rover-scan`, unplug camera, load the
+CPU, block a wheel) and assert the correct classification and reason.
+
+**Note:** every entry in that table is a real failure this project already hit and
+diagnosed by hand. L2 is the layer that would have caught them automatically.
+
+---
+
+## L3 — DECISION LAYER ❌ not started — *mandatory*
+**"The rover decides what to do when the plan fails."**
+
+Nav2 has no answer for "blocked, now what". Its recoveries are spin and back-up —
+mechanical twitches, both disabled here because they are blind on a 92 deg sensor.
+
+**Build: a supervisor node above Nav2** (a state machine / behaviour tree). It owns
+the mission and consumes `/rover_health` + Nav2 result codes.
+
+| Situation | Decision to make |
+|---|---|
+| Goal reached | next waypoint |
+| No valid path | retry / skip this leg / return / hold |
+| Blocked > N s | wait (person passing) -> reroute -> abort |
+| Health DEGRADED | slow down, drop video bitrate, shorten goals |
+| Health UNSAFE | stop, hold, notify |
+| **Localization lost** | **stop immediately — never drive blind** |
+| Battery low | return to base |
+| Mission complete | return, dock, report |
+
+**This is where "safe return to home" actually lives.** It is not a PX4 feature indoors:
+PX4 RTL drives to a GPS home, and on a rover it drives there with NO obstacle avoidance.
+
+**Test:** force each row, assert the chosen action.
+
+---
+
+## L4 — SEMANTICS ❌ not started — *this IS the surveillance product*
+**"The rover understands what it sees, not just that something is there."**
+
+Today every obstacle is an identical lethal costmap cell. For surveillance that is
+exactly wrong: a chair is furniture, a person is the event we exist to detect, an open
+door is a state change. **An occupancy grid cannot express any of that.**
+
+**Build:**
+1. Detector on the RGB stream (YOLOv8n) -> labelled 2D detections
+2. Project detections into 3D using the depth image -> labelled obstacles
+3. Semantic costmap layer — e.g. keep a larger berth around people than around walls
+4. **Event generation** — "person detected, room X, time T" + snapshot. This is the
+   actual output of a surveillance rover.
+
+⚠️ **CPU is the blocker.** YOLOv8n on Pi 5 CPU is roughly 1-3 fps on 4 cores that are
+already oversubscribed. Options: run detection only while stopped, drop resolution, or
+add an accelerator (Hailo / Coral). **Measure before designing around it.**
+
+---
+
+## L5 — GOAL REASONING ❌ optional for now
+**"The rover turns a goal into behaviour."**
+
+"Patrol the house" -> which rooms, what order, how long to dwell, what about the closed
+door, when to come back. **Today the operator decomposes this and hands over waypoints.
+When the rover decomposes it, that is autonomy.**
+
+Also: memory across runs — the sofa moved, this corridor is usually blocked, *this is
+different from yesterday*. For surveillance, noticing the difference IS the product.
+
+Candidate: the existing Ollama/phi3 stack for natural-language mission spec. Lowest
+priority — a hand-written route is a perfectly good substitute until L2-L4 are solid.
+
+---
+
+## What this changes about priorities
+
+```
+L0 ✅ ── L1 🔧 finish quickly, it is the foundation ── ▶ DEMO CEILING
+                                                        │
+                                    L2 self-awareness ──┤ mandatory unattended
+                                    L3 decisions       ─┤ mandatory unattended
+                                    L4 semantics       ─┘ the product
+```
+
+The real project is **L2 + L3 + L4**. Nav2 and PX4 are the actuation layer underneath
+them, not the goal. Time spent perfecting Nav2 tuning past "good enough" is time not
+spent on the layers that make the rover actually autonomous.
