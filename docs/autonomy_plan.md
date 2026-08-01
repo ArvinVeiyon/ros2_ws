@@ -406,3 +406,164 @@ L0 ✅ ── L1 🔧 finish quickly, it is the foundation ── ▶ DEMO CEILI
 The real project is **L2 + L3 + L4**. Nav2 and PX4 are the actuation layer underneath
 them, not the goal. Time spent perfecting Nav2 tuning past "good enough" is time not
 spent on the layers that make the rover actually autonomous.
+
+---
+
+# APPENDIX B — Outcome of every stage
+
+What you can DO at the end of each layer, how you know it is finished, and — equally
+important — what you still cannot do. The last column exists to stop us claiming a
+capability we have not built.
+
+**The milestone that matters is not "autonomous". It is UNATTENDED.**
+A rover you must watch is a demo regardless of how it navigates. Unattended operation
+requires L1 + L2 + L3 together, and no single one of them is sufficient.
+
+---
+
+## L0 — PLUMBING ✅ ACHIEVED 2026-08-01
+
+**Outcome:** *"Tell the rover a velocity and it executes it, and the telemetry describing
+what it did is TRUE."*
+
+**Definition of done**
+- [x] `/odom` publishes continuously, including at rest (ESC doze handled)
+- [x] Odometry scale verified against ground truth by two independent methods
+- [x] Commanded velocity produces the expected wheel response, armed
+- [x] `/cmd_vel` and `/scan` watchdogs proven to zero the motors
+- [x] Arm workflow repeatable (RC arm in Manual -> software switch to AutoNav)
+
+**Still cannot:** go anywhere by itself. Every metre is commanded by a human or script.
+
+**Why this mattered more than it looked:** the odometry scale was wrong by 12.2x for
+weeks. Every speed limit, every collision margin and every controller gain computed on
+top of it was meaningless. L0 is not plumbing you can skip — it is the layer that makes
+every number above it real.
+
+---
+
+## L1 — AUTOMATION 🔧 IN PROGRESS
+
+**Outcome:** *"Give the rover a goal or a route, and it drives there without hitting
+anything it can see, while an operator watches."*
+
+**Definition of done**
+- [ ] T1 speed tracking — sustained `/odom` within +/-20% of command
+- [ ] T2 straight goal, clear corridor — arrives within 0.20 m, reflex never fires
+- [ ] T3 single offset obstacle — routes around it, keeps inflation clearance
+- [ ] T4 fully blocked — stops cleanly, reports failure, does NOT spin or reverse
+- [ ] T5 dynamic obstacle — stops before contact
+- [ ] Point cloud + `voxel_layer` live — detects a table top, not just table legs
+- [ ] Waypoint sequencer drives a LIST of goals
+
+**Still cannot:** recover from a blocked path, notice that it is lost, or be left alone.
+
+**Boundary to be honest about:** this is the demo ceiling. A rover that follows waypoints
+and stops for obstacles is a train with a bumper. Finish it because L2-L5 need it, not
+because it is the goal.
+
+---
+
+## L2 — SELF-AWARENESS ❌ NOT STARTED
+
+**Outcome:** *"At any instant the rover states how much it should be trusted, and why.
+Every subsystem failure this project has hit by hand is now caught automatically."*
+
+**Definition of done** — each fault injected deliberately, classified correctly, with the
+right reason string, within 2 s:
+- [ ] Stop `rover-scan` -> `UNSAFE: perception stale`
+- [ ] Aim camera at a blank/glossy wall -> `DEGRADED: sector coverage 30%`
+- [ ] Load all 4 cores -> `DEGRADED: control loop starved`
+- [ ] Let `eph` grow past the gate -> `UNSAFE: localization diverged`
+- [ ] Block a wheel -> `DEGRADED: commanded/achieved mismatch`
+- [ ] Let ESCs doze -> reported as at-rest, NOT as a fault
+- [ ] Battery below threshold -> `DEGRADED: battery low`
+- [ ] `/rover_health` never emits a bare boolean — always level + reason
+
+**Still cannot:** act on any of it. L2 only reports; deciding is L3.
+
+**Test method:** faults must be INJECTED, not waited for. A monitor validated only by
+normal operation is untested.
+
+---
+
+## L3 — DECISION LAYER ❌ NOT STARTED
+
+**Outcome:** *"The rover completes a multi-waypoint mission, or abandons it safely and
+comes home, WITHOUT a human in the loop."*
+
+**This is the unattended milestone.** It is the first stage whose outcome is a change in
+what the operator has to do, rather than a change in what the rover can do.
+
+**Definition of done** — a full patrol run with induced failures, no intervention:
+- [ ] Reaches every reachable waypoint in order
+- [ ] Path blocked by a person -> waits, then reroutes, then skips the leg
+- [ ] Permanently blocked leg -> skips it and continues the mission
+- [ ] Health DEGRADED -> reduces speed / shortens goals and continues
+- [ ] Health UNSAFE -> stops and holds, does not keep driving
+- [ ] Localization lost -> stops IMMEDIATELY, never drives blind
+- [ ] Battery low -> abandons mission and returns to base
+- [ ] Mission end -> returns to base unaided
+- [ ] Runs to completion with the operator out of the room
+
+**Still cannot:** tell a person from a chair. Every obstacle is still an anonymous
+lethal cell.
+
+**Note:** "return to base" is built HERE, not inherited from PX4. PX4 RTL targets a GPS
+home and, on this rover, drives there with no obstacle avoidance whatsoever.
+
+---
+
+## L4 — SEMANTICS ❌ NOT STARTED
+
+**Outcome:** *"The rover reports WHAT it saw, WHERE and WHEN — and treats a person
+differently from furniture."*
+
+For indoor surveillance this outcome IS the product. L1-L3 deliver a rover that patrols
+safely; L4 is the first stage that produces something a user actually wants to read.
+
+**Definition of done**
+- [ ] Detector runs on the live RGB stream at a measured, stated frame rate
+- [ ] Detections projected into 3D and placed correctly in the costmap
+- [ ] Person-aware costmap — larger berth around people than around walls, verified
+- [ ] Events emitted as `{label, room/pose, timestamp, snapshot}`
+- [ ] Precision/recall measured on a held-out set — stated as numbers, not "works"
+- [ ] CPU cost measured; control-loop rates confirmed unaffected
+
+**Still cannot:** decide mission strategy for itself.
+
+**Known risk:** YOLOv8n is roughly 1-3 fps on 4 already-oversubscribed cores. If the
+measurement says the budget is not there, the honest outcomes are: run detection only
+while stopped, or add an accelerator. Do not silently starve the control loop for it.
+
+---
+
+## L5 — GOAL REASONING ❌ OPTIONAL
+
+**Outcome:** *"Give the rover a goal in human terms and it decides the behaviour —
+including noticing when today is different from yesterday."*
+
+**Definition of done**
+- [ ] A goal such as "patrol the ground floor" decomposes into a sensible route unaided
+- [ ] Unreachable room -> reorders or defers rather than failing the mission
+- [ ] Map persists across runs; changes are detected and reported
+- [ ] Novelty reported ("this door was closed yesterday")
+
+**Still cannot:** anything outside the physical envelope L0-L1 provides — a smarter brain
+does not extend the sensor's 92 deg or make a blind reverse safe.
+
+---
+
+## Summary — what each stage buys
+
+| Layer | The one-line outcome | Operator must... |
+|---|---|---|
+| **L0** ✅ | Telemetry is true, velocity commands execute | drive it |
+| **L1** 🔧 | Goes to a goal without hitting visible obstacles | watch it |
+| **L2** | States its own trustworthiness, with reasons | watch it, but now informed |
+| **L3** | **Completes or safely abandons a mission alone** | **leave the room** |
+| **L4** | Reports what it saw, where and when | read the report |
+| **L5** | Turns a stated goal into behaviour | state a goal |
+
+**The step-change is L3.** Everything before it produces a better-behaved remote-control
+vehicle. L3 is where the operator stops being required.
