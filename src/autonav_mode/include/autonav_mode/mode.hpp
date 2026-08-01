@@ -34,7 +34,12 @@ static constexpr double kCmdVelTimeout = 0.5;  // [s]
 // was only 0.255 m of actual bumper clearance.
 static constexpr double kStopDistance = 0.35;    // [m] block forward if bumper closer than this
 static constexpr double kClearDistance = 0.50;   // [m] release only once farther than this (hysteresis)
-static constexpr double kSectorHalfAngle = 0.35; // [rad] +/- forward sector (~20 deg)
+static constexpr double kSectorHalfAngle = 0.35; // [rad] +/- forward sector (~20 deg), outer bound only
+// Half the width of the corridor the body sweeps. The top plate is 0.405 m wide
+// (the wheels sit INBOARD of it, so the 0.31 m track is the wrong number), giving
+// a half-width of 0.2025 m; 0.25 adds ~5 cm of margin per side for heading error.
+// This, not the sector angle, is what decides whether an obstacle is in the path.
+static constexpr double kCorridorHalfWidth = 0.25;  // [m]
 static constexpr double kScanTimeout = 0.5;      // [s] /scan older than this -> perception stale
 // MEASURED 2026-07-28, rover parked square against a flat wall with zero gap:
 // the forward-sector min range read 0.337 m over 178 consecutive scans with no
@@ -60,6 +65,7 @@ class AutoNavMode : public px4_ros2::ModeBase {
     _stop_distance = node.declare_parameter<double>("collision.stop_distance", kStopDistance);
     _clear_distance = node.declare_parameter<double>("collision.clear_distance", kClearDistance);
     _sector_half = node.declare_parameter<double>("collision.sector_half_angle", kSectorHalfAngle);
+    _corridor_half_width = node.declare_parameter<double>("collision.corridor_half_width", kCorridorHalfWidth);
     _scan_timeout = node.declare_parameter<double>("collision.scan_timeout", kScanTimeout);
     _front_overhang = node.declare_parameter<double>("collision.front_overhang", kFrontOverhang);
     _blocked_yaw_rate = node.declare_parameter<double>("collision.blocked_yaw_rate", kBlockedYawRate);
@@ -81,12 +87,13 @@ class AutoNavMode : public px4_ros2::ModeBase {
         [this](sensor_msgs::msg::LaserScan::UniquePtr msg) { onScan(*msg); });
 
     RCLCPP_INFO(_node.get_logger(),
-        "AutoNav collision-stop %s: bumper stop<%.2fm clear>%.2fm (overhang %.3fm => raw scan "
-        "%.2fm/%.2fm) sector=+/-%.0fdeg scan_timeout=%.2fs require_scan=%s blocked_yaw<=%.2frad/s",
+        "AutoNav collision-stop %s: bumper stop<%.2fm clear>%.2fm (overhang %.3fm => forward "
+        "%.2fm/%.2fm) corridor=+/-%.2fm sector<=+/-%.0fdeg scan_timeout=%.2fs require_scan=%s "
+        "blocked_yaw<=%.2frad/s",
         _collision_enabled ? "ON" : "OFF", _stop_distance, _clear_distance, _front_overhang,
         _stop_distance + _front_overhang, _clear_distance + _front_overhang,
-        _sector_half * 180.0 / M_PI, _scan_timeout, _require_scan ? "yes" : "no",
-        _blocked_yaw_rate);
+        _corridor_half_width, _sector_half * 180.0 / M_PI, _scan_timeout,
+        _require_scan ? "yes" : "no", _blocked_yaw_rate);
 
     // Passive diagnostic: reports the collision-stop decision continuously,
     // even while disarmed/inactive, so the brake can be validated on stands
@@ -144,22 +151,42 @@ class AutoNavMode : public px4_ros2::ModeBase {
   }
 
  private:
-  // Update the nearest valid return inside the forward sector.
+  // Nearest obstacle inside the CORRIDOR THE BODY WILL SWEEP.
+  //
+  // This used to test an angular sector, which is the wrong shape. The rover is
+  // a fixed 0.405 m wide, but a cone narrows as it approaches the sensor, so an
+  // obstacle could sit inside the body width and still fall outside the cone.
+  // That happens whenever the forward distance is less than
+  //     half_width / tan(sector_half) = 0.2025 / tan(20 deg) = 0.556 m
+  // i.e. a box just in front of a front wheel was invisible to the brake while
+  // being exactly the thing the brake exists to stop for.
+  //
+  // So each ray is resolved into forward (x) and lateral (y) components and kept
+  // only if it lies within the corridor. Clearance is then measured along x --
+  // the direction of travel -- not along the slant range r. For an off-centre
+  // obstacle r > x, so the old test also OVER-reported clearance. Using x is
+  // both correct and conservative, and it leaves the measured front_overhang
+  // calibration valid, since that was taken square-on to a wall where x == r.
   void onScan(const sensor_msgs::msg::LaserScan& scan)
   {
-    float min_r = std::numeric_limits<float>::infinity();
+    float min_x = std::numeric_limits<float>::infinity();
     for (size_t i = 0; i < scan.ranges.size(); ++i) {
       const float ang = scan.angle_min + static_cast<float>(i) * scan.angle_increment;
       if (ang < -_sector_half || ang > _sector_half) {
-        continue;
+        continue;  // outer bound only, cheap reject
       }
       const float r = scan.ranges[i];
       if (!std::isfinite(r) || r <= 0.f || r < scan.range_min || r > scan.range_max) {
         continue;  // 0 / inf / nan / out-of-spec are not valid obstacles
       }
-      min_r = std::min(min_r, r);
+      const float x = r * std::cos(ang);   // forward, along travel
+      const float y = r * std::sin(ang);   // lateral
+      if (x <= 0.f || std::fabs(y) > _corridor_half_width) {
+        continue;  // beside the rover, not in its path
+      }
+      min_x = std::min(min_x, x);
     }
-    _front_min_range = min_r;  // inf => nothing detected in sector
+    _front_min_range = min_x;  // inf => nothing in the corridor
     _last_scan_time = _node.get_clock()->now();
   }
 
@@ -222,6 +249,7 @@ class AutoNavMode : public px4_ros2::ModeBase {
   double _stop_distance{kStopDistance};
   double _clear_distance{kClearDistance};
   double _sector_half{kSectorHalfAngle};
+  double _corridor_half_width{kCorridorHalfWidth};
   double _scan_timeout{kScanTimeout};
   double _front_overhang{kFrontOverhang};
   double _blocked_yaw_rate{kBlockedYawRate};
