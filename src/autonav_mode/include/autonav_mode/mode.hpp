@@ -35,11 +35,15 @@ static constexpr double kCmdVelTimeout = 0.5;  // [s]
 static constexpr double kStopDistance = 0.35;    // [m] block forward if bumper closer than this
 static constexpr double kClearDistance = 0.50;   // [m] release only once farther than this (hysteresis)
 static constexpr double kSectorHalfAngle = 0.35; // [rad] +/- forward sector (~20 deg), outer bound only
-// Half the width of the corridor the body sweeps. The top plate is 0.405 m wide
+// Half the width of the corridor the body sweeps. The top plate is 0.450 m wide
 // (the wheels sit INBOARD of it, so the 0.31 m track is the wrong number), giving
-// a half-width of 0.2025 m; 0.25 adds ~5 cm of margin per side for heading error.
+// a half-width of 0.225 m; 0.275 adds ~5 cm of margin per side for heading error.
 // This, not the sector angle, is what decides whether an obstacle is in the path.
-static constexpr double kCorridorHalfWidth = 0.25;  // [m]
+// CORRECTED 2026-08-01: was 0.25, derived from a plate width of 0.405 m that
+// docs/rover_autonav_requirements.md:75 supersedes ("07-21 said 0.405 - wrong").
+// 0.25 still covered the body, so nothing in the path was missed, but it left
+// 2.5 cm of heading-error margin per side rather than the 5 cm claimed here.
+static constexpr double kCorridorHalfWidth = 0.275;  // [m]
 static constexpr double kScanTimeout = 0.5;      // [s] /scan older than this -> perception stale
 // MEASURED 2026-07-28, rover parked square against a flat wall with zero gap:
 // the forward-sector min range read 0.337 m over 178 consecutive scans with no
@@ -154,10 +158,10 @@ class AutoNavMode : public px4_ros2::ModeBase {
   // Nearest obstacle inside the CORRIDOR THE BODY WILL SWEEP.
   //
   // This used to test an angular sector, which is the wrong shape. The rover is
-  // a fixed 0.405 m wide, but a cone narrows as it approaches the sensor, so an
+  // a fixed 0.450 m wide, but a cone narrows as it approaches the sensor, so an
   // obstacle could sit inside the body width and still fall outside the cone.
   // That happens whenever the forward distance is less than
-  //     half_width / tan(sector_half) = 0.2025 / tan(20 deg) = 0.556 m
+  //     half_width / tan(sector_half) = 0.225 / tan(20 deg) = 0.618 m
   // i.e. a box just in front of a front wheel was invisible to the brake while
   // being exactly the thing the brake exists to stop for.
   //
