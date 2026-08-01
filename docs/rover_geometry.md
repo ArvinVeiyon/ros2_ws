@@ -179,21 +179,32 @@ not just the name of the thing.
 
 ## 7. Sensors that are NOT on the vehicle
 
-Recorded here because the architecture docs described one of these as a live safety layer.
+| Sensor | Status 2026-08-01 |
+|---|---|
+| **VL53L1X front ToF** | **SUPERSEDED — this was the pre-depth-camera collision system.** Not mounted. `obstacle_distance` and `rov_collision_stop` remain in the tree but are built-and-idle: no systemd units, no live nodes. |
+| **STL-19 360° lidar** | With another team. No coverage behind or beside; never clear a spin from the depth `/scan`. |
 
-| Sensor | Status 2026-08-01 | Consequence |
+**The VL53L1X path is not a gap to be closed — it is the design the depth camera replaced.** A single
+0-25° beam at 10 Hz was the best available before the Gemini 336L; the depth path supersedes it on
+every axis that matters here:
+
+| | VL53L1X (old) | depth camera (current) |
 |---|---|---|
-| **VL53L1X front ToF** | **NOT MOUNTED.** `obstacle_distance` and `rov_collision_stop` are built but not running; no systemd units, no live nodes. | **There is no independent last-line e-stop.** The only reflex is inside `autonav_mode`'s executor, off the depth camera — same sensor, same computer, so *not* independent. |
-| **STL-19 360° lidar** | With another team | No coverage behind or beside; never clear a spin from the depth `/scan` |
+| Field of view | 0-25°, one beam | **91.9° fan** |
+| Height awareness | none | **0.12-0.45 m band** |
+| Rate | 10 Hz | **~29 Hz** on `/scan_3d` |
+| Near coverage | from 0.20 m | from 0.308 m — **inside the bumper**, so no forward blind strip (§4) |
 
-**Why not mounting the VL53L1X is acceptable today:**
-1. It would cover the depth camera's near blind zone, but **that blind zone is not in front of the
-   rover** — `cam_x = 0` puts the 0.308 m min-range circle 37 mm *inside* the bumper (§4).
-2. Where it does look it is strictly weaker: 0-25° single beam at 10 Hz, against a 92° height-aware
-   fan at ~29 Hz.
-3. `collision.require_scan = true` makes perception loss **fail safe** — a stale scan blocks forward
-   motion, so a dead camera stops the rover rather than blinding it.
+**Consequences of the current design, stated plainly so nobody re-derives them:**
+- The reflex lives inside `autonav_mode`'s executor, the single funnel to the motors, so it applies
+  regardless of who publishes `/cmd_vel`.
+- It runs off the same sensor and the same computer as everything else, so it is **not independent**
+  of the companion. That is inherent to the design, not an omission.
+- Perception loss **fails safe**: `collision.require_scan = true` blocks forward motion on a stale
+  scan, so a dead camera stops the rover rather than blinding it.
+- The one thing the old path could still offer is survival of a **companion-computer crash**, since
+  `/fmu/in/obstacle_distance` feeds PX4's collision prevention on the FC. Only worth revisiting if
+  unattended operation ever demands it — not a prerequisite for anything on the current ladder.
 
-**When it starts to matter — L3, "operator leaves the room."** `/fmu/in/obstacle_distance` feeds PX4's
-own collision prevention **on the flight controller**, so it is the only layer that would survive a
-companion-computer crash. Everything else — the executor reflex, Nav2 — dies with the Pi.
+**Cleanup:** `rov_collision_stop` and `obstacle_distance` are dead code paths kept for reference.
+Retiring them belongs with todo #17 (`camera_sw_node_obsolute.py`).

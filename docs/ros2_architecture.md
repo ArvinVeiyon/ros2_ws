@@ -27,11 +27,11 @@ firmware source. Getting the pxlabs fork checked out on the companion would enab
 PX4 fmu-v6xrt ◄─uXRCE-DDS ttyAMA4─► microxrce-agent ─► /fmu/in|out/* topics
   tfmini_node ──────────────► /fmu/in/distance_sensor        (TFmini ttyAMA2, 50Hz)
   obstacle_distance_publisher ► /fmu/in/obstacle_distance    (VL53L1X I2C, 10Hz, front 0–25°)
-                                                             ⚠️ NOT RUNNING — sensor not mounted (2026-08-01)
+                                                             ⚠️ SUPERSEDED by the depth camera — not mounted, node idle (2026-08-01)
   optical_flow_node ─────────► /fmu/in/sensor_optical_flow   (manual launch only)
   rc_control_node ◄──────────  /fmu/out/input_rc             (cam switch CH9, shutdown CH10)
   rov_collision_stop ◄───────  VL53L1X                       (emergency stop, C++)
-                                                             ⚠️ NOT RUNNING — sensor not mounted (2026-08-01)
+                                                             ⚠️ SUPERSEDED by the depth camera — not mounted, node idle (2026-08-01)
   vision_streaming_node ─────► RTP→WFB→GS                    (FPV, ffmpeg — NOT autonomy path)
 ```
 
@@ -75,7 +75,7 @@ Nav2 ─cmd_vel─► nav2_px4_bridge (px4_ros2 custom mode "AutoNav") ─► /f
 | `trajectory_setpoint`, `goto_setpoint` | fallback control path | ✅ exposed |
 | `register_ext_component_request`, `config_overrides_request`, `arming_check_reply_v1`, `mode_completed`, `vehicle_command`, `offboard_control_mode` | px4_ros2 lib internals | ✅ exposed |
 | `distance_sensor`, `sensor_optical_flow` | existing sensor nodes | ✅ in use today |
-| `obstacle_distance` | VL53L1X | 🔴 **NOT RUNNING — sensor not mounted (2026-08-01)** |
+| `obstacle_distance` | VL53L1X | **SUPERSEDED by the depth camera** — not mounted, idle (2026-08-01) |
 
 ## 4. M4 bridge design note (updated by today's findings)
 
