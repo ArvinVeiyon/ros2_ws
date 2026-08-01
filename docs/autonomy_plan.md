@@ -1,0 +1,254 @@
+# Vind-Roz Rover — Autonomy Plan, Operating Modes and Test Definition
+
+Status: 2026-08-01. Owner: roz. Companion doc to `roadmap.md` (ladder/status) — this
+one defines **what the rover does for a user**, not what the ladder step is called.
+
+---
+
+## 1. The question this document answers
+
+"Autonomous" is not one thing. Before building, we state **how autonomous, for which
+application**, because the answer changes what hardware and safety we need.
+
+Every autonomous vehicle must answer four questions. Ours are in very different states:
+
+| | Question | Provided by | Our state |
+|---|---|---|---|
+| Q1 | **Where am I?** | Localization | ❌ **The main gap** |
+| Q2 | **What is around me?** | Perception | ✅ Forward sector only |
+| Q3 | **How do I get there?** | Planning | 🔧 Configured, unproven |
+| Q4 | **What if it goes wrong?** | Failsafe | ⚠️ Partial |
+
+**Q1 is the wall.** Obstacle avoidance is nearly solved; knowing *where the rover is*
+is not. Every capability above "drive 3 m forward" — go to a room, patrol, return
+home — is a localization problem, not an avoidance problem.
+
+---
+
+## 2. Sensor roles — what each is FOR
+
+A 2D lidar sees **one horizontal slice at one height**. A depth camera sees a **3D
+volume ahead**. These are complementary, not redundant.
+
+| Obstacle | 2D lidar (STL-19) | Depth camera (Gemini 336L) |
+|---|---|---|
+| Table top, desk edge | ❌ passes underneath | ✅ |
+| Chair seat, shelf, overhang | ❌ | ✅ |
+| Low box, threshold, cable | ❌ passes over | ✅ |
+| Stairs / drop-off | ❌ | ✅ |
+| Wall, door frame | ✅ | ✅ |
+| **Behind and beside** | ✅ | ❌ **physically cannot** |
+| Long range, dark room | ✅ | ⚠️ weaker |
+
+**Depth camera = safe while going forward, and sees a class of obstacle the lidar never
+will. Lidar = safe while turning/reversing, and robust geometric SLAM.**
+A lidar-only rover drives under a table and wedges itself.
+
+### 2.1 ⚠️ We are currently using the depth camera badly
+Today: `depth image -> depthimage_to_laserscan -> /scan`. That **flattens a 3D depth
+image into one horizontal line**, discarding the exact advantage the camera has. No
+point cloud is published at all (verified 2026-08-01: only `/camera/depth/image_raw`).
+We have configured a 3D sensor to imitate a mediocre 2D lidar and then judged it as one.
+**Fix is configuration, not hardware:** enable the point cloud, add a Nav2 `voxel_layer`.
+
+### 2.2 ⚠️ Correction: indoor mapping does NOT require the lidar
+An earlier claim that "mapping the house needs the STL-19" was **over-generalised and
+is withdrawn**. What is true: **`slam_toolbox` needs it**, because it does 2D scan
+matching and 92 deg of view gives too little overlap.
+**RGB-D visual SLAM (RTAB-Map) is designed for exactly this camera** — it matches
+visual features in 3D, so a forward-facing narrow FOV is its normal case, and it closes
+loops by *recognising places*, which works fine at 92 deg. It outputs a 3D map plus a 2D
+occupancy grid Nav2 can use.
+⇒ **Level M3 below is NOT hardware-blocked.** It is blocked on configuration and CPU.
+
+### 2.3 The real limiter is CPU, not FOV
+4 cores already carry camera + depth->scan + odometry, with a documented starvation
+failure mode. Nav2 + voxel costmap + RTAB-Map on top is the genuine risk.
+**Measure headroom before designing around RTAB-Map.**
+
+---
+
+## 3. Application A — INDOOR SURVEILLANCE (first target)
+
+**What the user does:** picks a room or a patrol route on a saved house map, presses go.
+**What the rover does:** localizes itself, routes there, avoids people and moved
+furniture, streams video, returns to base, repeats.
+
+This application is **repeat-the-same-route in a semi-static environment**. That shape
+matters: the house does not change much, so **map once and re-localize** is exactly
+right, and the hard part is dynamic obstacles (people) and reliable re-localization.
+
+### Features required
+
+| # | Feature | Why | State |
+|---|---|---|---|
+| A1 | House map, built once, saved | Routing between rooms | ❌ RTAB-Map |
+| A2 | Re-localize on startup | "Where am I?" after power-on | ❌ |
+| A3 | Global route planning | Room to room, around walls | 🔧 Nav2 configured |
+| A4 | Dynamic obstacle avoidance | People, moved chairs | ✅ forward only |
+| A5 | 3D obstacle layer | Table tops, low objects | ❌ needs point cloud |
+| A6 | Patrol / waypoint executor | Route, not single goal | ❌ |
+| A7 | Video streaming during patrol | It IS the surveillance | ✅ but costs 21% of `/scan` |
+| A8 | Return to base | End of patrol, low battery | ❌ needs A1+A2 |
+| A9 | Safe stop on lost localization | Do not drive blind | ❌ |
+
+**A7 is a real conflict:** FPV streaming costs `/scan` 28.4 -> 22.3 Hz and worsens the
+reaction gap to 235 ms. For surveillance we WANT video while driving. Resolve by driving
+slower while streaming, or by proving the CPU budget.
+
+**A8 note:** PX4 RTL drives to a **GPS** home position. Indoors there is no GPS, so
+"return to base" means *routing home on our own map* — it only exists once A1+A2 exist.
+Until then the honest failsafe is **stop and wait for the operator**.
+
+---
+
+## 4. Application B — OUTDOOR GPS MISSION
+
+**User question answered directly: does it plan a map, or follow a pre-made map?**
+
+**Neither, for localization — outdoors GPS answers Q1 directly.** No prior map is needed
+to know where the rover is. That is the fundamental difference from indoors.
+
+So the split is:
+
+```
+GLOBAL  (where to go)   <- GPS waypoints. Known before starting. No map needed.
+LOCAL   (what is in the way) <- depth camera, discovered while driving. Cannot be known in advance.
+```
+
+**The depth camera's outdoor job is the local layer only.** The mission line is drawn on
+GPS coordinates; the camera decides how to get around the tree that is not on any map.
+
+Two variants:
+
+| | Prior map | Behaviour | Trade-off |
+|---|---|---|---|
+| **B1 Reactive** | none | Plan straight between waypoints, avoid what it sees | Simple. **Can trap itself** in a concave obstacle / dead end — no global knowledge |
+| **B2 Surveyed** | map built on a first pass | Global planner routes around known obstacles | Needs a mapping run first |
+
+**Start with B1.** It is the standard first outdoor capability and needs no mapping.
+B2 becomes attractive for a route driven repeatedly.
+
+### Mission execution and return
+1. Operator sets waypoints on a geographic map.
+2. Rover drives waypoint to waypoint; global plan from GPS, local avoidance from camera.
+3. On obstacle: local planner deviates, then rejoins the route.
+4. On mission end / low battery / failsafe: **return home**.
+
+⚠️ **Architecture decision to make consciously — who owns the mission?**
+
+| | PX4 owns it | Nav2 owns it |
+|---|---|---|
+| Mission, geofence, RTL | PX4 native | Nav2 + `navsat_transform` |
+| Obstacle avoidance | reflex layer only | full local planning |
+| Complexity | lower | higher |
+| Matches roadmap O4 | no | **yes** |
+
+Mixing them badly is a classic failure. `roadmap.md` O4 picks Nav2. **Decide before
+building outdoor**, because it determines whether RTL is a PX4 behaviour or a Nav2 one.
+
+### Depth camera outdoors — honest limits
+* Range ~3-5 m usable => caps safe speed. At 0.6 m/s a 235 ms perception gap is ~14 cm.
+* 92 deg FOV => cannot see a hazard approaching from the side.
+* Gemini 336L **is** outdoor-capable (the old "blind in sunlight" note was wrong).
+
+---
+
+## 5. OPERATING MODES — what we build and test
+
+Modes are cumulative: each keeps every safety property of the one below.
+
+### M0 — MANUAL (baseline)
+Operator drives on RC. No autonomy. **State: working.**
+
+### M1 — GUARDED MANUAL
+Operator drives on RC; the rover **refuses to hit what it can see ahead**.
+* Autonomy: obstacle override only.
+* Package `collision_manual_mode` exists, unproven.
+* **Purpose: proves the safety floor before anything drives itself.**
+
+### M2 — ASSISTED POINT-AND-GO  *(the depth-camera capability, available now)*
+Operator gives a **local goal ahead** ("3 m that way"). Rover drives there, steering
+around obstacles. **No map, no SLAM** — both costmaps roll in `odom`.
+* Config: `rover_nav2/config/nav2_forward.yaml` (written 2026-08-01).
+* Deliberately removed: **spin and back-up recoveries, and reverse** — all three drive
+  the rover through space nothing on it can see.
+* **Purpose: proves the whole chain** planner -> controller -> `/cmd_vel` ->
+  `autonav_mode` -> PX4 -> motors. When the lidar arrives, only the perception source
+  changes; everything downstream is already proven.
+
+### M3 — MAPPED PATROL (indoor surveillance = Application A)
+Operator selects a location or route **on a saved house map**. Rover localizes, routes,
+avoids dynamic obstacles, returns to base.
+* Needs: RTAB-Map (A1/A2), 3D voxel layer (A5), waypoint executor (A6), return (A8).
+* **Not hardware-blocked** (see 2.2). Blocked on config + CPU headroom.
+
+### M4 — GPS MISSION (outdoor = Application B)
+Operator sets GPS waypoints. Rover executes with PX4 safety underneath.
+* Needs: DroneCAN GPS, mission ownership decision, geofence, RTL policy.
+
+---
+
+## 6. FAILSAFE POLICY — the layer that must hold in every mode
+
+| Trigger | Correct response | Owner | State |
+|---|---|---|---|
+| Operator kill (RC ch8) | Motors off, disarm | PX4/RC | ✅ Manual — ❌ **untested in AutoNav** |
+| Obstacle inside stop distance | Block forward, cap yaw | our reflex, in-executor | ✅ proven armed |
+| `/scan` stale > 0.5 s | Block forward | our reflex | ✅ built |
+| `/cmd_vel` stale > 0.5 s | Zero setpoint | `autonav_mode` | ✅ proven |
+| **Localization lost / degraded** | **Stop and hold** | — | ❌ **does not exist** |
+| **No route to goal** | **Stop + notify, or return home** | — | ❌ **does not exist** |
+| RC link lost | Hold or return home | PX4 `NAV_RCL_ACT` | ⚠️ **set to DISARM** |
+| Battery low | Return home | PX4 | ❌ not configured |
+| Geofence breach | Hold / RTL | PX4 | ❌ outdoor |
+
+⚠️ **`NAV_RCL_ACT = 6` (Disarm on RC loss)** is correct for bench work and **wrong for a
+mission** — losing RC mid-patrol drops the rover dead where it stands instead of bringing
+it home. Must be a conscious decision before M3/M4.
+
+---
+
+## 7. TEST DEFINITION — pass criteria, not opinions
+
+Safety tests gate capability tests. **S-tests first.**
+
+| ID | Test | Pass criterion |
+|---|---|---|
+| **S1** | **Kill switch in AutoNav** (armed, 0.15 m/s, hit ch8) | Wheels stop immediately, disarms. **Never tested in AutoNav — the ultimate backstop** |
+| **S2** | Sensor loss (stop `rover-scan` while driving) | Forward blocked within 0.5 s |
+| **S3** | Yaw loop diagnosis (outdoor, `--yaw 0.2` and `0.4`) | `steering/setpoint` ~0.102 = OPEN loop (no gain fixes it) / ~0.052 = CLOSED (tuning job) |
+| **T1** | Speed tracking, 5 s leg at 0.2 m/s | **Sustained** `/odom` within +/-20% of command |
+| **T2** | M2 straight goal, clear corridor 2 m | Arrives within 0.20 m, collision-stop never fires |
+| **T3** | M2 with one offset obstacle | Routes around, keeps inflation clearance, arrives |
+| **T4** | M2 fully blocked corridor | Stops cleanly, reports failure, **does NOT spin or reverse** |
+| **T5** | Dynamic obstacle (step into its path) | Stops before contact. Tells us if 22 Hz + 0.55 m inflation is enough margin |
+| **T6** | M3 map build + re-localize | Map covers the area; after restart, pose recovered without operator input |
+| **T7** | M3 return to base | Routes home from an arbitrary point on the map |
+
+```
+S1 kill ─▶ S2 sensor loss ─▶ T1 speed ─▶ T2 straight goal
+                                             │
+     S3 yaw (outdoor) ───────────────────────┴─▶ T3 avoid ─▶ T4 blocked ─▶ T5 dynamic ─▶ T6/T7 mapped
+```
+
+T3 onward all require turning, so **S3 gates them**. T1/T2 are straight-line and can run
+indoors as soon as the workspace build lands.
+
+---
+
+## 8. Critical path
+
+```
+S1+S2 safety ─▶ T1/T2 prove M2 ─▶ enable point cloud + voxel layer (A5)
+                                        │
+                                        ├─▶ CPU headroom measurement  ─▶ RTAB-Map ─▶ M3 (indoor surveillance)
+                                        │
+                                        └─▶ S3 yaw ─▶ DroneCAN GPS ─▶ mission-ownership decision ─▶ M4 (outdoor)
+```
+
+**Immediate blockers, in order:**
+1. S1 kill switch in AutoNav — safety, untested, gates everything.
+2. S3 yaw loop — unknown open/closed; gates every turning test.
+3. Point cloud + voxel layer — unlocks the camera's actual capability.
+4. Failsafe policy decisions (`NAV_RCL_ACT`, lost-localization, no-route) — design, no hardware.
