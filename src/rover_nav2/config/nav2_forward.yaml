@@ -151,19 +151,29 @@ local_costmap:
         observation_sources: pointcloud
         pointcloud:
           topic: /camera/depth/points
-          sensor_frame: camera_link
+          # The cloud is published in camera_depth_optical_frame, not
+          # camera_link. Left empty so nav2 uses the message's own frame and
+          # raytracing originates where the sensor actually is.
+          sensor_frame: ""
           data_type: "PointCloud2"
           clearing: True
           marking: True
-          # min_obstacle_height clears the floor. Set it to 0.0 and the ground
-          # plane itself marks as a lethal obstacle in every cell the camera can
-          # see, and the rover refuses to move at all.
-          min_obstacle_height: 0.06
+          # MEASURED 2026-08-01: the floor sits at z = 0.043-0.093 m in
+          # base_link, not at 0 -- base_link is ~5 cm above the ground. A
+          # min_obstacle_height at or below that marks the FLOOR as lethal in
+          # every visible cell and the rover refuses to move at all. 0.12 clears
+          # the measured floor by ~3 cm, at the cost of missing obstacles under
+          # ~12 cm. Re-validate in an open corridor: pitch calibration error
+          # tilts the floor in base_link and can cross this threshold at range.
+          min_obstacle_height: 0.12
           max_obstacle_height: 0.45
           obstacle_max_range: 3.0      # depth quality falls off well before 5 m
-          obstacle_min_range: 0.0
+          # The camera sees the rover's own front plate at 0.305-0.331 m
+          # (measured, 1982 points). Below 0.40 m every observation is the
+          # vehicle itself, which would mark its own footprint lethal forever.
+          obstacle_min_range: 0.40
           raytrace_max_range: 3.5
-          raytrace_min_range: 0.0
+          raytrace_min_range: 0.40
           inf_is_valid: False
 
       obstacle_layer:
@@ -240,19 +250,29 @@ global_costmap:
         observation_sources: pointcloud
         pointcloud:
           topic: /camera/depth/points
-          sensor_frame: camera_link
+          # The cloud is published in camera_depth_optical_frame, not
+          # camera_link. Left empty so nav2 uses the message's own frame and
+          # raytracing originates where the sensor actually is.
+          sensor_frame: ""
           data_type: "PointCloud2"
           clearing: True
           marking: True
-          # min_obstacle_height clears the floor. Set it to 0.0 and the ground
-          # plane itself marks as a lethal obstacle in every cell the camera can
-          # see, and the rover refuses to move at all.
-          min_obstacle_height: 0.06
+          # MEASURED 2026-08-01: the floor sits at z = 0.043-0.093 m in
+          # base_link, not at 0 -- base_link is ~5 cm above the ground. A
+          # min_obstacle_height at or below that marks the FLOOR as lethal in
+          # every visible cell and the rover refuses to move at all. 0.12 clears
+          # the measured floor by ~3 cm, at the cost of missing obstacles under
+          # ~12 cm. Re-validate in an open corridor: pitch calibration error
+          # tilts the floor in base_link and can cross this threshold at range.
+          min_obstacle_height: 0.12
           max_obstacle_height: 0.45
           obstacle_max_range: 3.0      # depth quality falls off well before 5 m
-          obstacle_min_range: 0.0
+          # The camera sees the rover's own front plate at 0.305-0.331 m
+          # (measured, 1982 points). Below 0.40 m every observation is the
+          # vehicle itself, which would mark its own footprint lethal forever.
+          obstacle_min_range: 0.40
           raytrace_max_range: 3.5
-          raytrace_min_range: 0.0
+          raytrace_min_range: 0.40
           inf_is_valid: False
 
       obstacle_layer:

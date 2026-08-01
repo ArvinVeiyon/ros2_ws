@@ -33,18 +33,35 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     args = [
-        # Height band of the collision envelope, in base_link (z=0 at the floor).
-        # min_height clears the floor itself: set it too low and every scan reads
-        # "blocked" because the ground is an obstacle. VERIFY the floor really is
-        # at z~0 in base_link before trusting these -- if base_link sits at axle
-        # height the floor is negative and this band is wrong.
-        DeclareLaunchArgument('min_height', default_value='0.06'),
+        # Height band of the collision envelope, in base_link.
+        # MEASURED 2026-08-01 from the live cloud: the floor sits at z = 0.043
+        # to 0.093 m inside the driving corridor, NOT at z = 0. base_link is
+        # therefore ~5 cm above the floor, so an "obvious" min_height of 0.05
+        # would mark the FLOOR ITSELF as an obstacle and the rover would refuse
+        # to move anywhere. 0.12 clears the measured floor by ~3 cm.
+        # COST: obstacles shorter than ~12 cm are invisible. Still far better
+        # than the depthimage_to_laserscan band it replaces, which at 1 m only
+        # covered 0.22-0.31 m.
+        # ⚠️ RE-VALIDATE IN AN OPEN CORRIDOR. This was measured with something
+        # blocking at 1.26 m, so the floor was only sampled over 1.0-1.4 m. If
+        # camera pitch calibration is slightly off the floor TILTS in base_link
+        # and can cross this threshold further out, producing phantom obstacles.
+        DeclareLaunchArgument('min_height', default_value='0.12'),
         # Top of what the rover can collide with. Anything above this it drives
         # under, so treating it as an obstacle would refuse valid paths.
         DeclareLaunchArgument('max_height', default_value='0.45'),
         DeclareLaunchArgument('angle_min', default_value='-0.80'),   # rad, ~-46 deg
         DeclareLaunchArgument('angle_max', default_value='0.80'),    # rad, ~+46 deg
-        DeclareLaunchArgument('range_min', default_value='0.20'),
+        # MEASURED 2026-08-01: the camera sees the rover's OWN FRONT PLATE as a
+        # dense flat surface at x = 0.305-0.331 m, z = 0.12-0.24 m (1982 points,
+        # exactly at the 0.337 m bumper plane, with 1.26 m of genuinely clear
+        # floor beyond it). The old 2D /scan never noticed because at 0.3 m the
+        # plate falls below its narrow row band -- the height-aware scan is the
+        # first thing to look there. Left unfiltered it reports a permanent
+        # obstacle 3 cm inside the bumper and the rover never moves.
+        # 0.40 m clears the self-view. Nothing is lost: the reflex stops at 0.35 m
+        # of BUMPER clearance = 0.687 m from the camera, well beyond this.
+        DeclareLaunchArgument('range_min', default_value='0.40'),
         DeclareLaunchArgument('range_max', default_value='5.0'),
         DeclareLaunchArgument('cloud_topic', default_value='/camera/depth/points'),
     ]
