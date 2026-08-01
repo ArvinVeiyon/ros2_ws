@@ -53,6 +53,20 @@ static constexpr double kScanTimeout = 0.5;      // [s] /scan older than this ->
 // the camera is ever remounted — this constant is what makes the distances below
 // mean bumper clearance rather than lens clearance.
 static constexpr double kFrontOverhang = 0.337;  // [m] scan origin -> front bumper
+// Vehicle footprint in base_link, used to reject the rover's own bodywork from a
+// height-aware scan. The top plate is 0.730 x 0.450 m with the rotation centre
+// 0.345 m back from the tip => x in [-0.385, +0.345], |y| <= 0.225.
+// Full derivation and the consumer list: docs/rover_geometry.md.
+static constexpr double kFootprintFront = 0.345;      // [m] base_link -> front plate tip
+static constexpr double kFootprintHalfWidth = 0.225;  // [m] half of the 0.450 m plate
+// Grown slightly before the reject test: the plate's own edges lie EXACTLY on the
+// footprint boundary, so a bare strict inequality lets the edge itself leak
+// through as an obstacle (observed 2026-08-01 at bearing 35 deg / range 0.392 m,
+// which is precisely where the side edge sits). This also absorbs static-TF and
+// measurement error, which is ~1 cm on front_overhang. Cost: a real obstacle
+// within 20 mm of the bodywork is ignored -- acceptable, since the reflex already
+// blocks at 350 mm of bumper clearance and could never legitimately be there.
+static constexpr double kFootprintMargin = 0.02;      // [m]
 // While blocked, yaw is capped rather than freed: enough authority to turn away,
 // not enough to lunge. An asymmetric skid-steer spin TRANSLATES, which is how an
 // ungated yaw leg reached the wall despite the forward brake working correctly.
@@ -72,6 +86,9 @@ class AutoNavMode : public px4_ros2::ModeBase {
     _corridor_half_width = node.declare_parameter<double>("collision.corridor_half_width", kCorridorHalfWidth);
     _scan_timeout = node.declare_parameter<double>("collision.scan_timeout", kScanTimeout);
     _front_overhang = node.declare_parameter<double>("collision.front_overhang", kFrontOverhang);
+    _footprint_front = node.declare_parameter<double>("collision.footprint_front", kFootprintFront);
+    _footprint_half_width = node.declare_parameter<double>("collision.footprint_half_width", kFootprintHalfWidth);
+    _footprint_margin = node.declare_parameter<double>("collision.footprint_margin", kFootprintMargin);
     _blocked_yaw_rate = node.declare_parameter<double>("collision.blocked_yaw_rate", kBlockedYawRate);
     // When /scan is stale/absent: true = fail-safe (block forward, no blind driving),
     // false = permit forward with no perception (drivetrain-only bench runs).
@@ -93,11 +110,12 @@ class AutoNavMode : public px4_ros2::ModeBase {
     RCLCPP_INFO(_node.get_logger(),
         "AutoNav collision-stop %s: bumper stop<%.2fm clear>%.2fm (overhang %.3fm => forward "
         "%.2fm/%.2fm) corridor=+/-%.2fm sector<=+/-%.0fdeg scan_timeout=%.2fs require_scan=%s "
-        "blocked_yaw<=%.2frad/s",
+        "footprint x<%.3f&|y|<%.3f (+%.3f margin) rejected blocked_yaw<=%.2frad/s",
         _collision_enabled ? "ON" : "OFF", _stop_distance, _clear_distance, _front_overhang,
         _stop_distance + _front_overhang, _clear_distance + _front_overhang,
         _corridor_half_width, _sector_half * 180.0 / M_PI, _scan_timeout,
-        _require_scan ? "yes" : "no", _blocked_yaw_rate);
+        _require_scan ? "yes" : "no", _footprint_front, _footprint_half_width, _footprint_margin,
+        _blocked_yaw_rate);
 
     // Passive diagnostic: reports the collision-stop decision continuously,
     // even while disarmed/inactive, so the brake can be validated on stands
@@ -188,6 +206,24 @@ class AutoNavMode : public px4_ros2::ModeBase {
       if (x <= 0.f || std::fabs(y) > _corridor_half_width) {
         continue;  // beside the rover, not in its path
       }
+      // Returns from INSIDE the vehicle footprint are the vehicle. The depth
+      // camera sees a 45 mm sliver of the rover's own top plate at 0.300-0.345 m
+      // (docs/rover_geometry.md S4); nothing external can be inside the bumper.
+      //
+      // This is a POLYGON test, not a radial one, and both terms matter. The
+      // corridor is +/-0.275 m but the body is only +/-0.225 m half-width, so a
+      // return at x=0.32, y=0.26 is BESIDE the rover -- a real obstacle -- and a
+      // bare `x < front` cut would silently discard it.
+      //
+      // Doing it here rather than with a blanket scan range_min is what lets
+      // range_min drop to the sensor floor: a constant 0.40 m cut also erased
+      // genuine obstacles between the 0.337 m bumper and 0.40 m, and a dropped
+      // ray is indistinguishable from empty space, so the reflex read those as
+      // INFINITE clearance. That was a ~6 cm fail-open strip at the bumper.
+      if (x < _footprint_front + _footprint_margin &&
+          std::fabs(y) < _footprint_half_width + _footprint_margin) {
+        continue;  // the rover's own bodywork
+      }
       min_x = std::min(min_x, x);
     }
     _front_min_range = min_x;  // inf => nothing in the corridor
@@ -254,6 +290,9 @@ class AutoNavMode : public px4_ros2::ModeBase {
   double _clear_distance{kClearDistance};
   double _sector_half{kSectorHalfAngle};
   double _corridor_half_width{kCorridorHalfWidth};
+  double _footprint_front{kFootprintFront};
+  double _footprint_half_width{kFootprintHalfWidth};
+  double _footprint_margin{kFootprintMargin};
   double _scan_timeout{kScanTimeout};
   double _front_overhang{kFrontOverhang};
   double _blocked_yaw_rate{kBlockedYawRate};

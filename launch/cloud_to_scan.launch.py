@@ -61,7 +61,25 @@ def generate_launch_description():
         # obstacle 3 cm inside the bumper and the rover never moves.
         # 0.40 m clears the self-view. Nothing is lost: the reflex stops at 0.35 m
         # of BUMPER clearance = 0.687 m from the camera, well beyond this.
-        DeclareLaunchArgument('range_min', default_value='0.40'),
+        # 0.31 = just above the MEASURED 0.308 m sensor near limit, i.e. keep
+        # everything the camera can actually return.
+        #
+        # ⚠️ THIS TOPIC THEREFORE CONTAINS THE ROVER'S OWN TOP PLATE, as a 45 mm
+        # sliver at 0.300-0.345 m (docs/rover_geometry.md S4). EVERY CONSUMER MUST
+        # REJECT ITS OWN FOOTPRINT: x < 0.345 AND |y| < 0.225 in base_link.
+        # autonav_mode does this in onScan(); Nav2 does it with
+        # footprint_clearing_enabled on both costmaps.
+        #
+        # Why not just raise range_min until the plate disappears (it was 0.40):
+        # a radial cut CANNOT express a rectangular body. At 0.40 it also erased
+        # real obstacles between the 0.337 m bumper and 0.40 m, and a dropped ray
+        # is indistinguishable from empty space, so the reflex read that strip as
+        # INFINITE clearance -- a ~6 cm fail-open band right at the bumper. Even a
+        # tighter 0.35 m cut misses an obstacle at bearing 45 deg / range 0.34
+        # (x=0.24, y=0.24), which is beside the body, inside the corridor, and
+        # entirely real. The footprint test belongs in the consumer, where x and y
+        # are both available.
+        DeclareLaunchArgument('range_min', default_value='0.31'),
         DeclareLaunchArgument('range_max', default_value='5.0'),
         DeclareLaunchArgument('cloud_topic', default_value='/camera/depth/points'),
     ]
