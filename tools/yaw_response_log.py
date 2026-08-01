@@ -163,23 +163,35 @@ class YawLog(Node):
                      f' saturates at ±1.0)'
                      f'\n      if loop OPEN   (never sees vehicle): {open_pred:+.3f}'
                      f'\n      if loop CLOSED (P={self.p_gain}):        {closed_pred:+.3f}')
-            d_open = abs(st - open_pred)
-            d_closed = abs(st - closed_pred)
-            # The two hypotheses only separate when the loop is actually being
-            # driven. At sp ~ 0 both predict ~0 and the "verdict" is a coin flip
-            # dressed up as a result -- which is exactly what this printed on the
-            # first forward-only run. Refuse to answer rather than mislead.
-            separation = abs(open_pred - closed_pred)
-            if abs(sp) < 0.05 or separation < 0.02:
-                line += ('\n      => NO VERDICT: yaw setpoint ~0, so open and closed'
-                         f'\n         predict the same output (separation {separation:.3f}).'
-                         '\n         Run an actual yaw command to discriminate.')
-            elif d_open < d_closed:
-                line += ('\n      => matches OPEN LOOP — the rate controller is not'
-                         '\n         seeing vehicle_angular_velocity.')
+            # Discriminate on the RATIO steering/setpoint, not on absolute
+            # output. Lowering P to de-risk the test also shrinks the absolute
+            # gap between the hypotheses -- and at a low P an open loop happens
+            # to produce roughly the commanded rate, so the rover's BEHAVIOUR
+            # stops being informative. The ratio does not care:
+            #     open   : (FF_ratio + P)          -- error stays = setpoint
+            #     closed : FF_ratio                -- error collapses to ~0
+            # which is a clean 2x split at P=0.05, independent of setpoint.
+            ff_ratio = RD_WHEEL_TRACK / 2.0 / RO_MAX_THR_SPEED
+            open_ratio = ff_ratio + self.p_gain
+            if abs(sp) < 0.05:
+                line += ('\n      => NO VERDICT: yaw setpoint ~0, nothing to'
+                         '\n         discriminate. Command a real yaw rate.')
             else:
-                line += ('\n      => matches a CLOSED loop — feedback is alive, so the'
-                         '\n         runaway is a tuning/stability problem, not a dead loop.')
+                ratio = st / sp
+                line += (f'\n    steering/setpoint = {ratio:.4f}'
+                         f'\n      OPEN   loop predicts {open_ratio:.4f}'
+                         f'  (FF {ff_ratio:.4f} + P {self.p_gain})'
+                         f'\n      CLOSED loop predicts {ff_ratio:.4f}'
+                         f'  (FF only, error driven to ~0)')
+                if abs(ratio - open_ratio) < abs(ratio - ff_ratio):
+                    line += ('\n      => OPEN LOOP — the rate controller is not seeing'
+                             '\n         vehicle_angular_velocity. No gain fixes this.')
+                else:
+                    line += ('\n      => CLOSED loop — feedback is alive, so the runaway'
+                             '\n         is a tuning/stability problem, not a dead loop.')
+                if abs(gz_frd) > 1e-6:
+                    line += (f'\n    achieved/commanded = {gz_frd / sp:.2f}'
+                             f'   (1.00 = tracking)')
         print(line, flush=True)
 
 
