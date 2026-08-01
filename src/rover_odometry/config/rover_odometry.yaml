@@ -30,6 +30,13 @@ wheel_odometry_node:
     yaw_source: gyro
     attitude_timeout: 0.5        # s, older than this = stale, fall back to wheels
 
+    # These VESCs doze at rest (only addr 13 stays online, flags=8), which used to
+    # silence /odom entirely whenever the rover stopped -- an L5 blocker, since
+    # Nav2 and rover_ekf_bridge both need odometry to keep arriving. A dozing ESC
+    # cannot be turning its wheel, so when every AWAKE wheel reads zero we publish
+    # a genuine zero-velocity sample instead. Set false to restore the old skip.
+    publish_at_rest: true
+
     frame_id: odom
     child_frame_id: base_link
     publish_tf: true

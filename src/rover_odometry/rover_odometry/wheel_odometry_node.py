@@ -36,6 +36,14 @@ Implementation notes:
     the gyro-derived source available to us.
   * If attitude goes stale we fall back to wheel-derived yaw automatically
     rather than freezing heading, and say so in the log.
+  * These VESCs doze at rest: after a few seconds without motion only address 13
+    keeps reporting (esc_online_flags 8), so one side has no data and a naive
+    reader concludes the wheels are unreadable. They are not — a dozing ESC
+    cannot be driving its wheel, so if every ESC that is still awake reads zero
+    the rover is provably stationary. We publish that as a zero-velocity
+    measurement (publish_at_rest) rather than going silent, because /odom
+    dropping out whenever the rover stops would break Nav2 and starve
+    rover_ekf_bridge's EV aiding mid-mission.
 """
 
 import math
@@ -74,6 +82,10 @@ class WheelOdometryNode(Node):
         # comparison and as a diagnostic if the FC link is down.
         self.declare_parameter('yaw_source', 'gyro')
         self.declare_parameter('attitude_timeout', 0.5)
+        # Keep publishing a zero-velocity /odom when dozing ESCs leave a side
+        # unreported but every awake wheel reads zero. Set false to restore the
+        # old behaviour (skip the update, /odom goes silent) for A/B testing.
+        self.declare_parameter('publish_at_rest', True)
 
         self.left_addrs = set(self.get_parameter('left_addresses').value)
         self.right_addrs = set(self.get_parameter('right_addresses').value)
@@ -89,6 +101,7 @@ class WheelOdometryNode(Node):
         self.publish_tf = self.get_parameter('publish_tf').value
         self.yaw_source = str(self.get_parameter('yaw_source').value).lower()
         self.attitude_timeout = self.get_parameter('attitude_timeout').value
+        self.publish_at_rest = self.get_parameter('publish_at_rest').value
         if self.yaw_source not in ('gyro', 'wheels'):
             self.get_logger().warning(
                 f"unknown yaw_source '{self.yaw_source}' — falling back to 'wheels'")
@@ -106,6 +119,7 @@ class WheelOdometryNode(Node):
         self.att_reset_count = None
         self.prev_att_yaw = None       # yaw at the previous odometry step
         self.gyro_active = None        # None until first decision, then bool
+        self.at_rest_active = False    # publishing inferred zero velocity?
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -164,7 +178,7 @@ class WheelOdometryNode(Node):
             return
         ref_us = max(stamps)
 
-        left, right = [], []
+        left, right, online = [], [], []
         for i, r in enumerate(reports):
             if r.timestamp == 0 or r.esc_address not in self.sign:
                 continue
@@ -176,20 +190,49 @@ class WheelOdometryNode(Node):
             if abs(erpm) < self.deadband:
                 erpm = 0.0
             v = erpm * self.sign[r.esc_address] * self.erpm_to_ms
+            online.append(v)
             if r.esc_address in self.left_addrs:
                 left.append(v)
             elif r.esc_address in self.right_addrs:
                 right.append(v)
 
-        if not left or not right:
+        at_rest = False
+        if left and right:
+            v_left = sum(left) / len(left)
+            v_right = sum(right) / len(right)
+        elif self.publish_at_rest and online and not any(v != 0.0 for v in online):
+            # A side has no online ESC. At rest that is normal, not a dropout:
+            # these VESCs doze after a few seconds of no motion and only addr 13
+            # keeps reporting (esc_online_flags 8), which reads as L:1 R:0.
+            #
+            # We can still assert the rover is stationary, because a dozing ESC
+            # cannot be driving its wheel — an ESC that is turning a motor is by
+            # definition awake and reporting, and a wheel turned externally wakes
+            # its ESC too (nudge test, 2026-07-26). So if every ESC that IS awake
+            # reads inside the deadband, no wheel is moving. That makes this a
+            # real zero-velocity measurement, not absent data, and publishing it
+            # is what keeps /odom alive for Nav2 and rover_ekf_bridge.
+            #
+            # The guard is `any(...)`, so a single awake wheel reporting motion
+            # while its opposite side is missing still falls through to the skip
+            # below — a genuinely unreadable rover never gets reported as stopped.
+            v_left = v_right = 0.0
+            at_rest = True
+        else:
             self.get_logger().warning(
                 f'incomplete wheel data (L:{len(left)} R:{len(right)}) — skipping update',
                 throttle_duration_sec=5.0)
             self.prev_stamp_us = msg.timestamp
             return
 
-        v_left = sum(left) / len(left)
-        v_right = sum(right) / len(right)
+        if at_rest != self.at_rest_active:
+            if at_rest:
+                self.get_logger().info(
+                    f'ESCs dozing (online_flags={msg.esc_online_flags}) and all awake '
+                    'wheels at zero — publishing /odom at rest')
+            else:
+                self.get_logger().info('all wheels reporting again — /odom fully measured')
+            self.at_rest_active = at_rest
         v_lin = (v_left + v_right) / 2.0
         v_ang_wheels = (v_right - v_left) / self.track
 
