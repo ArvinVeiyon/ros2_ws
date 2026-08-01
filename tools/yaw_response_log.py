@@ -126,8 +126,11 @@ class YawLog(Node):
 
         peak_vx = max(b['vx'], key=abs)
         self.bursts.append(b)
+        # Peak alone is misleading on a short burst: it catches the acceleration
+        # overshoot, not what the speed loop settles at. Report both.
         line = (f'burst {len(self.bursts)}: {b["last"] - b["t0"]:.1f}s  '
-                f'fwd peak={peak_vx:+.3f} m/s  rpm={b["rpm"]}')
+                f'fwd peak={peak_vx:+.3f} sustained={sustained(b["vx"]):+.3f} m/s  '
+                f'rpm={b["rpm"]}')
         if b['gz']:
             line += (f'\n    yaw GYRO  peak={max(b["gz"], key=abs):+.3f} '
                      f'sustained={sustained(b["gz"]):+.3f} rad/s   <-- ground truth')
@@ -162,7 +165,16 @@ class YawLog(Node):
                      f'\n      if loop CLOSED (P={self.p_gain}):        {closed_pred:+.3f}')
             d_open = abs(st - open_pred)
             d_closed = abs(st - closed_pred)
-            if d_open < d_closed:
+            # The two hypotheses only separate when the loop is actually being
+            # driven. At sp ~ 0 both predict ~0 and the "verdict" is a coin flip
+            # dressed up as a result -- which is exactly what this printed on the
+            # first forward-only run. Refuse to answer rather than mislead.
+            separation = abs(open_pred - closed_pred)
+            if abs(sp) < 0.05 or separation < 0.02:
+                line += ('\n      => NO VERDICT: yaw setpoint ~0, so open and closed'
+                         f'\n         predict the same output (separation {separation:.3f}).'
+                         '\n         Run an actual yaw command to discriminate.')
+            elif d_open < d_closed:
                 line += ('\n      => matches OPEN LOOP — the rate controller is not'
                          '\n         seeing vehicle_angular_velocity.')
             else:
