@@ -18,15 +18,22 @@ Usage: yaw_response_log.py [seconds]     (default 120)
 import sys
 import time
 
+import argparse
 import rclpy
 from nav_msgs.msg import Odometry
-from px4_msgs.msg import EscStatus, SensorCombined
+from px4_msgs.msg import (EscStatus, RoverRateSetpoint, RoverSteeringSetpoint,
+                          SensorCombined)
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
 MOVING_YAW = 0.02    # [rad/s] above this the rover counts as rotating
 MOVING_FWD = 0.02    # [m/s]   above this the rover counts as translating
 GAP_S = 0.8          # quiet time that ends a burst
+
+# Firmware constants for the open-vs-closed loop prediction below. Chain is
+# DifferentialRateControl.cpp -> RoverControl::rateControl (RoverControl.cpp:163).
+RD_WHEEL_TRACK = 0.31      # m, read live from the FC 2026-08-01
+RO_MAX_THR_SPEED = 3.0     # m/s, read live from the FC 2026-08-01
 
 
 class YawLog(Node):
@@ -43,10 +50,41 @@ class YawLog(Node):
         # expose vehicle_angular_velocity over DDS; sensor_combined is the available source.
         self.create_subscription(SensorCombined, '/fmu/out/sensor_combined',
                                  self.gyro_cb, px4_qos)
+
+        # THE DECISIVE PAIR (added 2026-08-01): what the rate loop was TOLD and
+        # what it actually PUT OUT. Everything before this session inferred the
+        # controller's behaviour from wheel ERPM; these two topics show it
+        # directly, which is what separates "loop is open" from "loop is unstable".
+        #
+        # QoS matters and is not symmetric: the px4_ros2 lib publishes /fmu/in/*
+        # VOLATILE while the uXRCE agent publishes /fmu/out/* TRANSIENT_LOCAL. A
+        # TRANSIENT_LOCAL subscriber on /fmu/in/ receives silently nothing.
+        vol_qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
+                             durability=DurabilityPolicy.VOLATILE,
+                             history=HistoryPolicy.KEEP_LAST, depth=5)
+        self.create_subscription(RoverRateSetpoint, '/fmu/in/rover_rate_setpoint',
+                                 self.rate_sp_cb, vol_qos)
+        self.create_subscription(RoverSteeringSetpoint,
+                                 '/fmu/out/rover_steering_setpoint',
+                                 self.steer_cb, px4_qos)
+
         self.rpm = [0, 0, 0, 0]
         self.gyro_z = 0.0
+        self.rate_sp = 0.0
+        self.steer = 0.0
+        self.saw_rate_sp = False
+        self.saw_steer = False
         self.burst = None
         self.bursts = []
+
+    def rate_sp_cb(self, msg):
+        # Commanded yaw rate, PX4 FRD sense (as the FC receives it).
+        self.rate_sp = msg.yaw_rate_setpoint
+        self.saw_rate_sp = True
+
+    def steer_cb(self, msg):
+        self.steer = msg.normalized_steering_setpoint
+        self.saw_steer = True
 
     def esc_cb(self, msg):
         self.rpm = [msg.esc[i].esc_rpm for i in range(4)]
@@ -63,12 +101,15 @@ class YawLog(Node):
 
         if moving:
             if self.burst is None:
-                self.burst = {'t0': now, 'wz': [], 'vx': [], 'gz': [], 'rpm': [0, 0, 0, 0]}
+                self.burst = {'t0': now, 'wz': [], 'vx': [], 'gz': [],
+                              'sp': [], 'st': [], 'rpm': [0, 0, 0, 0]}
             b = self.burst
             b['last'] = now
             b['wz'].append(wz)
             b['vx'].append(vx)
             b['gz'].append(self.gyro_z)
+            b['sp'].append(self.rate_sp)
+            b['st'].append(self.steer)
             b['rpm'] = [max(a, abs(r)) for a, r in zip(b['rpm'], self.rpm)]
         elif self.burst and now - self.burst.get('last', now) > GAP_S:
             self.close_burst()
@@ -92,14 +133,58 @@ class YawLog(Node):
                      f'sustained={sustained(b["gz"]):+.3f} rad/s   <-- ground truth')
         line += (f'\n    yaw /odom peak={max(b["wz"], key=abs):+.3f} '
                  f'sustained={sustained(b["wz"]):+.3f} rad/s   (suspect, see gyro_cb)')
+
+        # --- open-loop vs unstable-loop verdict -------------------------------
+        # rateControl() output = FF + PID, where
+        #   FF  = sp * RD_WHEEL_TRACK/2 / RO_MAX_THR_SPEED       (small)
+        #   PID = RO_YAW_RATE_P * (sp - measured_yaw_rate)       (dominant)
+        # If the loop never sees the vehicle, "measured" stays 0 and the output
+        # sits at P*sp regardless of how fast the rover is actually spinning.
+        # If the loop does see it, the output must COLLAPSE (and go negative)
+        # once achieved rate overshoots the setpoint. Those two predictions are
+        # far apart, so one burst decides it.
+        if not self.saw_rate_sp:
+            line += '\n    !! no /fmu/in/rover_rate_setpoint seen — is AutoNav active?'
+        if not self.saw_steer:
+            line += ('\n    !! no /fmu/out/rover_steering_setpoint seen — the FC only'
+                     '\n       publishes it while ARMED in a rover mode.')
+        if b['sp'] and b['st'] and self.saw_steer and self.saw_rate_sp:
+            sp = sustained(b['sp'])
+            st = sustained(b['st'])
+            gz_frd = -sustained(b['gz'])      # back to PX4 FRD sense to match sp
+            ff = sp * RD_WHEEL_TRACK / 2.0 / RO_MAX_THR_SPEED
+            open_pred = ff + self.p_gain * sp
+            closed_pred = ff + self.p_gain * (sp - gz_frd)
+            line += (f'\n    cmd yaw sp   ={sp:+.3f} rad/s   achieved(FRD)={gz_frd:+.3f}'
+                     f'\n    steering out ={st:+.3f}  (peak {max(b["st"], key=abs):+.3f},'
+                     f' saturates at ±1.0)'
+                     f'\n      if loop OPEN   (never sees vehicle): {open_pred:+.3f}'
+                     f'\n      if loop CLOSED (P={self.p_gain}):        {closed_pred:+.3f}')
+            d_open = abs(st - open_pred)
+            d_closed = abs(st - closed_pred)
+            if d_open < d_closed:
+                line += ('\n      => matches OPEN LOOP — the rate controller is not'
+                         '\n         seeing vehicle_angular_velocity.')
+            else:
+                line += ('\n      => matches a CLOSED loop — feedback is alive, so the'
+                         '\n         runaway is a tuning/stability problem, not a dead loop.')
         print(line, flush=True)
 
 
 def main():
-    seconds = float(sys.argv[1]) if len(sys.argv) > 1 else 120.0
+    ap = argparse.ArgumentParser()
+    ap.add_argument('seconds', nargs='?', type=float, default=120.0)
+    ap.add_argument('--p-gain', type=float, default=2.0,
+                    help='RO_YAW_RATE_P currently set on the FC — needed to predict '
+                         'what an open vs closed loop would output')
+    args = ap.parse_args()
+    seconds = args.seconds
     rclpy.init()
     n = YawLog()
-    print(f'listening {seconds:.0f}s (commands nothing) — run l2_test.py --live now', flush=True)
+    n.p_gain = args.p_gain
+    print(f'listening {seconds:.0f}s (commands nothing) — run l2_test.py --live now',
+          flush=True)
+    print(f'assuming RO_YAW_RATE_P = {args.p_gain}', flush=True)
     end = time.time() + seconds
     while time.time() < end:
         rclpy.spin_once(n, timeout_sec=0.2)
