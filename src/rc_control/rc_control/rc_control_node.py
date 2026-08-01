@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import threading
 from ruamel.yaml import YAML
 
 import rclpy
@@ -9,6 +10,15 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from px4_msgs.msg import InputRc
 import subprocess
 import time
+
+VISION_CONFIG_MANAGER = '/usr/local/bin/vision_config_manager'
+
+# A failing camera switch is retried a few times in case the failure is transient
+# (device mid-rebind, briefly busy), then given up on until the operator actually
+# moves the switch. It is NEVER retried per RC message -- see cb_rc.
+CAM_MAX_ATTEMPTS = 3
+CAM_RETRY_BASE_S = 0.5
+CAM_TIMEOUT_S    = 10
 
 class RCControlNode(Node):
     def __init__(self):
@@ -41,7 +51,12 @@ class RCControlNode(Node):
         self.reboot_pwm   = srm.get('reboot')
 
         # state trackers
-        self.last_cam_state   = None
+        # cam_attempted is the selection we most recently STARTED work on. It is
+        # latched the instant a change is seen, not when the switch succeeds --
+        # see cb_rc for why. cam_applied records what actually took effect.
+        self.cam_attempted    = None
+        self.cam_applied      = None
+        self._cam_lock        = threading.Lock()
         self.shutdown_start   = None
         self.reboot_start     = None
         self.did_shutdown     = False
@@ -61,8 +76,52 @@ class RCControlNode(Node):
             f"sys→CH{self.sys_ch+1}@tol±{self.sys_tol}, hold={self.sys_hold}s"
         )
 
+    def _start_cam_switch(self, target):
+        threading.Thread(target=self._cam_worker, args=(target,), daemon=True).start()
+
+    def _cam_worker(self, target):
+        """Apply a camera selection off the RC callback thread.
+
+        This runs in its own thread so that a slow, hung or repeatedly failing
+        vision_config_manager cannot delay the shutdown/reboot stick detection,
+        which shares cb_rc with the camera logic.
+        """
+        cmd = ['sudo', VISION_CONFIG_MANAGER, target[0]]
+        if target[1]:
+            cmd.append(target[1])
+
+        with self._cam_lock:            # serialise rapid switch flips
+            delay = CAM_RETRY_BASE_S
+            last  = None
+            for attempt in range(1, CAM_MAX_ATTEMPTS + 1):
+                if self.cam_attempted != target:
+                    return              # operator moved on; abandon this target
+                try:
+                    subprocess.run(cmd, check=True, timeout=CAM_TIMEOUT_S,
+                                   stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.PIPE)
+                    self.cam_applied = target
+                    self.get_logger().info(f"Camera → {target}")
+                    return
+                except subprocess.CalledProcessError as e:
+                    last = (e.stderr or b'').decode(errors='replace').strip() or e
+                except Exception as e:
+                    last = e
+                if attempt < CAM_MAX_ATTEMPTS:
+                    time.sleep(delay)
+                    delay *= 2
+
+            # Give up on THIS target, logged once rather than at the RC rate.
+            self.get_logger().error(
+                f"Camera switch to {target} failed after {CAM_MAX_ATTEMPTS} attempts; "
+                f"not retrying. Cycle the RC switch away and back to try again. "
+                f"Last error: {last}")
+
     def cb_rc(self, msg: InputRc):
         vals = [int(v) for v in msg.values]
+        n_ch = min(int(msg.channel_count), len(vals))
+        if self.cam_ch >= n_ch or self.sys_ch >= n_ch:
+            return                      # RX reporting fewer channels than mapped
 
         # ----- camera switching logic -----
         pwm = vals[self.cam_ch]
@@ -75,16 +134,22 @@ class RCControlNode(Node):
         else:
             desired = None
 
-        if desired and desired != self.last_cam_state:
-            cmd = ['sudo', '/usr/local/bin/vision_config_manager', desired[0]]
-            if desired[1]:
-                cmd.append(desired[1])
-            try:
-                subprocess.run(cmd, check=True)
-                self.get_logger().info(f"Camera → {desired}")
-                self.last_cam_state = desired
-            except subprocess.CalledProcessError as e:
-                self.get_logger().error(f"Camera switch failed: {e}")
+        # Latch the ATTEMPT, not the success, and do the work off-thread.
+        # Latching on success alone meant a PERMANENT failure -- e.g. /dev/video0
+        # absent because vision_streaming is deliberately stopped for testing --
+        # was retried on every RC message at 95 Hz forever: 2181 failures in ten
+        # minutes, ~100% of a core, and because the spawn was blocking it also
+        # delayed the shutdown/reboot checks below. The camera switch's resting
+        # detent requests the front camera, so this was the DEFAULT state during
+        # any perception test, not an accident.
+        if desired is None:
+            # Switch sits between detents. Clear the latch so that returning to a
+            # position re-attempts it -- cycling the switch is the natural "try
+            # again" gesture once a camera is actually plugged in or streaming.
+            self.cam_attempted = None
+        elif desired != self.cam_attempted:
+            self.cam_attempted = desired
+            self._start_cam_switch(desired)
 
         # ----- shutdown/reboot logic -----
         pwm2 = vals[self.sys_ch]
