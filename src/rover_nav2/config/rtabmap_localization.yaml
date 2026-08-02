@@ -1,0 +1,48 @@
+# RTAB-Map LOCALIZATION mode - the replacement for AMCL on this vehicle.
+#
+# Why not AMCL: AMCL matches a full 360 deg lidar ring against an occupancy grid.
+# This rover has a 92 deg forward RGB-D wedge with ~4 m of usable range. Measured
+# 2026-08-02: after 46.9 m of driving AMCL plateaued at sigma_yaw 25-30 deg and then
+# drifted back up - it could not resolve the ambiguity. Same class of mistake as
+# using slam_toolbox to map with this camera.
+#
+# RTAB-Map relocalizes with the SAME visual place recognition that built the map
+# (appearance matching + visual registration), which is designed for a narrow forward
+# FOV. It publishes map->odom exactly like AMCL, so Nav2 sits on top unchanged;
+# map_server still serves the occupancy grid for planning.
+#
+# NOTE odom is taken from TF, not from the /odom message: rover_odometry publishes a
+# CONSTANT pose covariance, and RTAB-Map derives link information from the CHANGE in
+# covariance between poses - a constant one yields zero and trips a fatal in
+# Link.cpp::setInfMatrix. Reading odom from TF with explicit variances avoids it.
+
+rtabmap:
+  ros__parameters:
+    use_sim_time: false
+    frame_id: "base_link"
+    map_frame_id: "map"
+    odom_frame_id: "odom"          # take odom from TF, not the message
+    odom_tf_linear_variance: 0.001
+    odom_tf_angular_variance: 0.001
+    publish_tf: true               # publishes map->odom, the AMCL replacement
+    subscribe_depth: true
+    subscribe_rgb: true
+    approx_sync: true
+    queue_size: 20
+    database_path: "/home/roz/rtabmap_run3_vis_nav.db"
+
+    # LOCALIZATION ONLY - do not add new nodes to the map.
+    Mem/IncrementalMemory: "false"
+    Mem/InitWMWithAllNodes: "true"
+
+    # Same masking as the mapping run: the bottom 35% of every colour frame is the
+    # rover's own top plate. Leaving it in poisons matching.
+    Kp/RoiRatios: "0.0 0.0 0.0 0.35"
+    Vis/RoiRatios: "0.0 0.0 0.0 0.35"
+    Vis/MinInliers: "12"
+
+    # Relocalization must accept a large correction: wheel/gyro odom drifts 33-44 deg
+    # over a few minutes, so the map->odom fix will be big.
+    RGBD/OptimizeMaxError: "0"
+    RGBD/ProximityBySpace: "true"
+    Rtabmap/DetectionRate: "2.0"

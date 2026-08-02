@@ -1,0 +1,73 @@
+# AMCL localization against a saved RTAB-Map-derived occupancy grid.
+#
+# Companion to nav2_forward.yaml, which deliberately runs with global_frame: odom
+# (no map, no localization). This file is the other half: it answers Q1 "where am I?"
+# by matching the live /scan against a map built offline.
+#
+# Sensor reality this is tuned for (see docs/rover_geometry.md, indoor_mapping_plan.md):
+#   - /scan comes from the depth camera, NOT a 360 deg lidar: ~92 deg forward only.
+#     AMCL is normally fed a full 360 deg scan, so several defaults are wrong for us.
+#   - /scan runs at ~15 Hz while depth_fps is capped for mapping; ~30 Hz otherwise.
+#   - The map was built with visual odometry + the rover's top plate masked out.
+#
+# The rover cannot see behind itself, so a spin gives AMCL almost no new information.
+# Expect convergence to need forward travel, not rotation.
+
+map_server:
+  ros__parameters:
+    use_sim_time: false
+    yaml_filename: "/home/roz/house_map.yaml"
+    topic_name: "map"
+    frame_id: "map"
+
+amcl:
+  ros__parameters:
+    use_sim_time: false
+    global_frame_id: "map"
+    odom_frame_id: "odom"
+    base_frame_id: "base_link"
+    scan_topic: "scan"
+
+    # Differential-drive skid steer.
+    robot_model_type: "nav2_amcl::DifferentialMotionModel"
+
+    # 92 deg of view means far fewer usable beams than AMCL assumes. Use all of them.
+    max_beams: 180
+    laser_model_type: "likelihood_field"
+    laser_likelihood_max_dist: 2.0
+    # Match the real depth range, not lidar defaults. Beyond ~4 m the depth is unreliable.
+    laser_min_range: 0.35
+    laser_max_range: 4.0
+    z_hit: 0.6
+    z_rand: 0.4
+    z_short: 0.05
+    z_max: 0.05
+    sigma_hit: 0.2
+
+    # Wheel/gyro odometry on this rover drifts badly in HEADING (measured: 33-44 deg
+    # over a 4 min run), so tell AMCL not to trust rotation. alpha1/alpha4 are the
+    # rotation-related noise terms and are deliberately large.
+    alpha1: 0.5    # rotation noise from rotation
+    alpha2: 0.2    # rotation noise from translation
+    alpha3: 0.2    # translation noise from translation
+    alpha4: 0.5    # translation noise from rotation
+    alpha5: 0.2
+
+    # More particles than default: a narrow FOV is ambiguous, so the filter needs
+    # room to hold competing hypotheses until forward motion disambiguates them.
+    min_particles: 800
+    max_particles: 4000
+    pf_err: 0.05
+    pf_z: 0.99
+    recovery_alpha_slow: 0.001
+    recovery_alpha_fast: 0.1
+
+    # Update on small motion - the rover is driven slowly during mapping/localizing.
+    update_min_d: 0.15
+    update_min_a: 0.15
+    resample_interval: 1
+    transform_tolerance: 1.0
+    save_pose_rate: 0.5
+    tf_broadcast: true
+    always_reset_initial_pose: false
+    set_initial_pose: false
