@@ -134,7 +134,100 @@ creep to saturation.
 
 ---
 
-## 6. Method notes that cost time
+## 6. Yaw response is SLOW — ~2 s time constant
+
+From the one clean rise event captured: **2.24 s to reach 90% of final rate.**
+
+⇒ A steady-state reading needs a hold of **~4.5 s**, which is why the mid-range points
+(65% / 80% stick) are still unmeasured — a skid-steer spin **translates** as well as rotates,
+and indoors you run out of room before the hold completes. **That validation is an OUTDOOR job:
+four 4-second holds at 60 / 70 / 80 / 90%.**
+
+⚠️ **The time constant matters more than the missing data point.** A Nav2 controller that expects
+crisp yaw will over-correct and hunt — the same failure the simulation showed, arriving from a
+different direction. **Do not re-plan faster than the vehicle can respond.**
+
+---
+
+## 7. The compass, and heading control instead of rate control
+
+**There IS a working magnetometer** (verified 2026-08-02): `SYS_HAS_MAG = 1`,
+`CAL_MAG0_ID = 396809` (calibrated), `EKF2_MAG_TYPE = 1`, and live data on `HIGHRES_IMU`
+(−0.019 / −0.315 / −0.193 gauss, stable).
+
+**It does not help the RATE loop** — a magnetometer gives *heading*, an angle; the rate
+controller needs a *rate*. Wrong quantity.
+
+**But it enables a better architecture.** Navigation does not actually need rate control, it needs
+**heading** control, and PX4 already has it: `DifferentialAttControl`, with **`RO_YAW_P = 2.0`
+already set on this FC**. Nav2 commands a heading, the attitude loop produces a rate setpoint, and
+**heading error persists until the rover genuinely turns** — far more robust against a friction
+deadband than trying to track a rate.
+
+### 🔑 The quantifiable limit
+Heading error becomes a rate setpoint through `RO_YAW_P`, and rates below ~0.9 rad/s do nothing:
+
+```
+minimum correctable heading error = 0.9 / RO_YAW_P
+    RO_YAW_P = 2.0  ->  0.45 rad  ~= 26 deg     <- current
+    RO_YAW_P = 4.0  ->  0.22 rad  ~= 13 deg     <- at the cost of overshoot
+```
+
+**Below ~26° of heading error the rover cannot correct itself at the current gain.** That is the
+number to design Nav2 around, and it is tunable.
+
+---
+
+## 8. Why this rover is harder than most indoor robots
+
+**Most indoor autonomous robots are NOT 4-wheel skid-steers.** TurtleBot, Roomba and warehouse
+AMRs use **two driven wheels plus casters**: the casters swivel during a turn, so there is
+essentially **no scrub and no friction deadband**. That single geometry choice is why they get
+smooth, slow, precise turning.
+
+The 4-wheel skid-steers that do exist (Clearpath Husky/Jackal, agricultural rovers) have exactly
+this problem and handle it by:
+- **large torque margin**, so the deadband sits low in the output range rather than at 45% of it;
+- **operating outdoors on loose surfaces**, where scrub is far cheaper than on a hard floor;
+- **accepting coarse yaw**, planning wide arcs rather than tight pivots.
+
+⇒ **This rover is not misconfigured relative to the field — it is fighting physics that most
+indoor robots were designed to avoid.** 25 kg on four driven wheels on a hard floor is close to
+the worst case for scrub. Mechanical levers, if 26° proves too coarse: less weight, narrower
+track, smoother tyres, or lifting the middle wheels if the chassis allows.
+
+---
+
+## 9. OPTION (not built): run the yaw loop on the companion
+
+PX4's feedforward is `sp × k` — **proportional through the origin**. This plant needs
+`0.40 + sp/7.6` — it has an **offset**. No value of `RO_YAW_RATE_CORR` can express that, which is
+why no single value tracks across the range (§4).
+
+**We could express it ourselves.** Feasibility confirmed 2026-08-02 — all three pieces exist:
+- **`/fmu/in/rover_steering_setpoint` IS exposed over DDS** (`dds_topics.yaml:235`)
+- **`DifferentialActControl` subscribes to it** (`DifferentialActControl.cpp:65`) and drives the
+  actuators from it
+- **The gyro reaches the companion at ~76 Hz** on `/fmu/out/sensor_combined`
+
+```
+steer = 0.40*sign(sp)      # cross the deadband - what PX4's FF cannot express
+      + sp / 7.6           # inverse of the measured plant
+      + PID(sp - gyro)     # closed loop on the IMU, with our own anti-windup
+```
+
+**Buys:** deadband compensation by construction, our own anti-windup with an output floor that
+never sits in the dead zone, 76 Hz against a 2 s plant.
+**Does NOT buy:** the deadband still exists — this routes *around* it. **Below ~0.9 rad/s stays
+physically unachievable**, and the ~2 s time constant stays.
+⚠️ **It bypasses PX4's rate controller**, so that path's internal limits no longer apply;
+`autonav_mode`'s watchdogs would become the only guard. That needs deliberate design.
+⏭ **Verdict: park it.** The current tune is monotonic and safe, which is enough for Nav2 to make
+discrete turns. Build this only if turning quality proves to be what holds navigation back.
+
+---
+
+## 10. Method notes that cost time
 
 - **Always log `nav_state` alongside any control-loop probe.** In MANUAL, `manual()`
   publishes the steering setpoint straight from the stick and the rate controller never runs,
