@@ -91,13 +91,41 @@ operating range and let proportional feedback cover the rest.
 
 ---
 
-## 5. Remaining tuning (bounded work, not diagnosis)
+## 5. FINAL TUNE (applied and validated 2026-08-02)
 
-- `RO_YAW_RATE_CORR` → **~2.0-2.5** (currently 3.0, sized for the low end)
-- `RO_YAW_RATE_P` → **~0.3-0.5** (currently 0.05, too weak for real authority)
-- `RO_YAW_RATE_I` → **keep 0, or very small**. The deadband is precisely what makes windup
-  dangerous; an integrator that can reach 1.0 will always eventually slam through it.
-- Clamp commanded yaw rate to **≥ 0.67 rad/s** everywhere upstream.
+| param | value | why |
+|---|---|---|
+| `RO_YAW_RATE_CORR` | **1.8** | design point ~1.2 rad/s, the middle of the usable band |
+| `RO_YAW_RATE_P` | **0.08** | highest gain that does not hunt across the deadband |
+| `RO_YAW_RATE_I` | **0.0** | 🔴 the windup source. **Do not restore it.** |
+| `RO_YAW_RATE_LIM` | **85.9 deg/s** (= 1.50 rad/s) | matched to the usable band |
+| `RO_MAX_THR_SPEED` | **0.6** | the real top speed |
+
+**Chosen by simulating the closed loop against the measured plant.** Predicted tracking:
+
+| commanded | 0.8 | 1.0 | 1.2 | 1.5 |
+|---|---|---|---|---|
+| achieved | 0.00 | 0.69 | **1.20** | 1.97 |
+
+**Validated on the floor in ACRO:** 50% stick → no rotation (correct, deadband) · 65% → slow ·
+80% → turns · 100% → fast. Monotonic and controllable. Steady holds at the top end matched the
+model to **0.27 rad/s mean error** (steer 1.000 → 4.60 achieved vs 4.56 predicted).
+⚠️ The 65% / 80% points are confirmed by observation but were not held steady long enough to
+measure — a gap, not a contradiction.
+
+### 🔴 Honest limits of this tune — design around them, do not try to tune them away
+1. **Nothing below ~0.9 rad/s.** The deadband is physical. The only software way across it is an
+   integrator, and that is exactly what caused #20.
+2. **±50% tracking away from 1.2 rad/s.** PX4's feedforward is proportional *through the origin*;
+   this plant has a **+0.40 offset**. No single `CORR` fits both ends of the range.
+3. **Higher P hunts.** Feedback across a deadband drives the output below breakaway, the rover
+   stops, the error flips, and it oscillates. 0.08 is the ceiling. Simulation: every candidate
+   with P ≥ 0.1 and `CORR` ≥ 1.3 failed to settle.
+
+⇒ **Nav2 must treat turning as a COARSE, DISCRETE manoeuvre at ~1.2 rad/s**, never as a
+continuously modulated fine correction, and must **never command below ~0.9 rad/s**.
+⇒ The only route to genuinely better yaw is **traction**: less weight, different tyres, or a
+different surface. This is not a software problem any more.
 
 **Test bench:** ACRO at low `P` with `I = 0`. It exercises the rate controller, needs **no
 position estimate** (unlike AutoNav, which PX4 refuses to enter while armed when
