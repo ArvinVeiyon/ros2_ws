@@ -1,7 +1,8 @@
 # Indoor mapping — plan, measured costs, and the next session's steps
 
-**Written 2026-08-02 00:30.** Goal: a map of the house good enough for autonomous indoor
-navigation. Everything below was measured on this hardware. Nothing has been driven yet.
+**Written 2026-08-02 00:30. Updated 2026-08-02 11:30 with the Step 1–3 results.** Goal: a map of the
+house good enough for autonomous indoor navigation. Everything below was measured on this hardware.
+**Nothing has been driven yet** — the first driving step is the §6 shakedown run.
 
 Companion docs: [`rover_geometry.md`](rover_geometry.md) (dimensions, camera mount),
 [`autonomy_plan.md`](autonomy_plan.md) (the ladder), [`rover_autonav_collision_stop.md`](rover_autonav_collision_stop.md).
@@ -41,26 +42,57 @@ other corner. **Without colour the map slowly bends and rooms end up in the wron
 
 ---
 
-## 2. Measured costs — 2026-08-01/02, rover stationary
+## 2. Measured costs
+
+### 2.1 CURRENT — 2026-08-02, colour AND depth both 640×360, `depth_registration:=true`
+
+Baseline with the reconfigured camera: `/scan` **30.5 Hz**, `/scan_3d` **30.0 Hz**, load1 **2.12**,
+camera container **48.9%** of a core.
 
 | | baseline | `ros2 bag record` | RTAB-Map `rgbd_odometry` |
 |---|---|---|---|
-| CPU | — | **42.6% of a core** | **79.6% of a core** |
-| load1 (4 cores) | **2.25** | 5.64 | **9.44** |
-| `/scan` | 13.4 Hz | **14.2 Hz** ✅ | **7.0 Hz** 🔴 halved |
-| `/scan_3d` cloud | 23.2 Hz | **25.3 Hz** ✅ | 17.3 Hz |
+| CPU | camera 48.9% | — | 🔴 **94.6% of a core** |
+| load1 (4 cores) | **2.12** | 🔴 **15.18** | 🔴 **10.44** |
+| `/scan` | **30.5 Hz** | **23.1 Hz** (−23%) | **19.1 Hz** (−37%) |
+| `/scan_3d` | **30.0 Hz** | — | **20.0 Hz** |
+| bag growth | — | ✅ **16 MB/s** | — |
 
-✅ **Recording does not degrade the safety path.** 🔴 **RTAB-Map realtime does** — and its own
-throughput was 0.29–0.43 s per update (~3 Hz) with **0.83–1.04 s of delay**. That was *only* the
-odometry node, without the map/loop-closure node and without depth registration, so the true realtime
-cost is higher. **This is why mapping is offline.**
+🔴 **RTAB-Map still does not fit realtime — the 640×360 hypothesis is FALSIFIED.** Its CPU went *up*
+(79.6% → 94.6%), and its own throughput barely moved: **0.25–0.39 s per update (~3 Hz) with
+0.78–1.02 s of delay.** **The offline architecture in §1 stands.**
+⚠️ **Confounded, state it honestly:** resolution dropped *and* registration turned on in the same
+change, so the CPU rise cannot be attributed to one alone — and the old 79.6% was a *cheaper but
+incorrect* config, since RGB-D needs registration. What is solid: **in the correct config at
+640×360 it still does not fit.** Isolating them needs a 640×360 + registration-OFF run.
+✅ Odometry *quality* was healthy throughout — 150–271 inliers, std dev ~0.002 m. It works; it is
+just too slow.
 
-### The binding constraint is the SD card, not CPU
-- Bag growth **29.3 MB/s** against a measured **27.4 MB/s** sustained-write ceiling — it writes *at*
-  the card's limit, so any hiccup drops messages.
-- 27 GB free ⇒ **≈15 minutes of driving.**
-- ⇒ **A USB SSD is effectively required for a real run.** None is attached.
-- Dropping colour to 640×360 shrinks the bag *and* RTAB-Map's cost — one change, both problems.
+✅ **The SD card is no longer the binding constraint.** Growth **29.3 → 16 MB/s**, ~40% under the
+measured **27.4 MB/s** ceiling; 27 GB free now buys **≈28 minutes** of driving, not 15.
+⇒ **A USB SSD is OPTIONAL, not required. Do not buy hardware for this yet.**
+
+🔴 **WITHDRAWN: "recording does not degrade the safety path."** That was measured against an
+already-degraded **13.4 Hz** baseline, where a 14.2 Hz reading looked like an improvement — it was
+noise, not headroom. Against a clean **30.5 Hz** baseline, recording costs a real **23% of `/scan`**
+and drives load1 to **15.18**, largely I/O wait (SD writes park processes in D-state, which Linux
+counts as load). **Recording is far cheaper on disk but NOT free on the safety path** — and §4 means
+there is no collision reflex during the run, so drive slowly.
+
+### 2.2 SUPERSEDED — 2026-08-01/02, colour 1280×720, depth 848×480, registration OFF
+
+Kept only so the deltas above are checkable. **Do not quote these numbers.**
+
+| | baseline | `ros2 bag record` | RTAB-Map `rgbd_odometry` |
+|---|---|---|---|
+| CPU | — | 42.6% of a core | 79.6% of a core |
+| load1 | 2.25 | 5.64 | 9.44 |
+| `/scan` | 13.4 Hz | 14.2 Hz | 7.0 Hz |
+| `/scan_3d` | 23.2 Hz | 25.3 Hz | 17.3 Hz |
+| bag growth | — | 29.3 MB/s (over the ceiling) | — |
+
+⚠️ **METHOD LESSON — both of these bag conclusions were distorted by the same fault:** the baseline
+itself was degraded, which made the disk look fatal and the `/scan` cost look free. **Never conclude
+"no cost" from a delta taken against a degraded baseline. Fix the baseline, then measure.**
 
 ---
 
@@ -100,60 +132,109 @@ rate controller.
 
 ---
 
-## 5. Next session — do these in order
+## 5. Steps 1–3 — DONE 2026-08-02
 
-### Step 1 — reconfigure the camera (one restart)
-Add to `/etc/systemd/system/rover-camera.service.d/10-point-cloud-decimation.conf`:
-```
-depth_registration:=true color_width:=640 color_height:=360
-```
-Keep `point_cloud_decimation_filter_factor:=3`. **640×360 preserves 16:9 and therefore the FOV;
-640×480 would not.** Then:
+| Step | Outcome |
+|---|---|
+| **1. Camera reconfig** | ✅ Applied. Drop-in adds `depth_registration:=true color_width:=640 color_height:=360`, keeps `point_cloud_decimation_filter_factor:=3`. Half-dead check passed first try. `/scan` 28.0, `/scan_3d` 29.7 Hz. |
+| **2. Re-measure RTAB-Map** | 🔴 **Hypothesis falsified — it still does not fit.** 94.6% of a core, ~1 s delay unchanged. §2.1. |
+| **3. Re-measure bag** | ✅ **16 MB/s, ~28 min on 27 GB — SSD no longer required.** But recording costs 23% of `/scan`. §2.1. |
+
+Config detail worth keeping: **640×360 preserves 16:9 and therefore the FOV; 640×480 would not.**
+🔑 **`depth_registration:=true` forces depth to the COLOUR resolution** — depth is now 640×360, no
+longer its native 848×480, and carries the colour intrinsics. Fewer cloud columns (~213 not 283
+after decimation 3, ~0.42°/col ≈ 2.2 cm at 3 m — still well inside a 5 cm costmap cell).
+Revert: `/etc/systemd/system/10-point-cloud-decimation.conf.bak-20260802`.
+
 ```bash
-sudo systemctl daemon-reload && sudo systemctl restart rover-camera
-# 🔴 MANDATORY half-dead check — a restart can come up "active" with depth+colour DEAD, no error:
+# 🔴 MANDATORY after ANY camera restart — it can come up "active" with depth+colour DEAD, no error:
 journalctl -u rover-camera --since -1min | grep "depth Frame - Width"
 # absent => restart again. Also confirm a real topic rate; systemctl is-active does NOT catch this.
 ```
-
-### Step 2 — re-measure RTAB-Map at 640×360
-```bash
-ros2 run rtabmap_odom rgbd_odometry --ros-args \
-  -r rgb/image:=/camera/color/image_raw -r depth/image:=/camera/depth/image_raw \
-  -r rgb/camera_info:=/camera/color/camera_info -r odom:=/rtab_odom \
-  -p frame_id:=base_link -p approx_sync:=true
-```
-Watch `update time=` and `delay=` in its log, and CPU. **If it drops from 79.6% to ~20%, realtime may
-be back on the table** and the offline step becomes optional rather than necessary.
 ⚠️ `Odom/Strategy` and `Vis/MaxFeatures` are **string** params — `-p Odom/Strategy:=0` throws
 `InvalidParameterTypeException` and quoting does not help. Use a params file or omit them.
-
-### Step 3 — re-measure bag growth at 640×360
-Expect well under the 27.4 MB/s ceiling. **If it is, the SSD stops being a hard requirement.**
-
-### Step 4 — the mapping run
-- **USB SSD if the bag is still near the ceiling.** Record to it, not the SD.
-- **Manual mode. Slow.** Motion blur destroys feature matching, and fast turns are where scan matching
-  fails. There is no collision reflex — §4.
-- **Make deliberate LOOPS.** Return to places already driven. That is exactly what loop closure needs
-  and what stops the map bending. Cover room by room, revisit doorways.
-- Record: `/camera/color/image_raw`, `/camera/color/camera_info`, `/camera/depth/image_raw`,
-  `/camera/depth/camera_info`, `/odom`, `/tf`, `/tf_static`.
-
-### Step 5 — offline on the laptop, then back
-RTAB-Map over the bag; export a 2D occupancy grid; copy the grid and database back; run AMCL + Nav2
-against it on the Pi.
+⚠️ `pgrep -f rgbd_odometry` **matches its own command line** and will falsely report the node alive.
+⚠️ Re-check for contaminating processes **mid-measurement**, not only at the start.
 
 ---
 
-## 6. Open questions
+## 6. Next — do these in order
 
-- **Does 640×360 actually make RTAB-Map fit?** The whole plan's cost hinges on this and it is untested.
-- **Is the ~1 s odometry delay caused by CPU starvation, or intrinsic?** If it survives a CPU fix, 1 s
-  is fine for mapping (drive slowly) but unusable for control.
-- **How much does SW depth registration cost?** `align_mode` is `SW`; it has never been measured.
-- **Is `/odom` good enough through turns?** It is validated on straight-line speed only, and the
-  gyro-yaw odometry item (#21) is open. RTAB-Map can run on *visual* odometry instead, which sidesteps
-  it — worth trying both.
-- **What is the drift over a full house circuit, and does loop closure actually fire?** The real test
-  of whether any of this works.
+**Decision 2026-08-02: try it ON THE ROVER first**, using the bag route that Step 3 just validated.
+The alternative architecture in §7 stays open as the documented fallback.
+
+**Why rover-first:** it is ready now and needs zero new setup, whereas the laptop route needs ROS2
+Jazzy + the OrbbecSDK wrapper + `rtabmap_ros` + DDS over WFB before it teaches anything. And the
+genuinely open questions — does `/odom` survive turns, does loop closure fire in these rooms, how
+slow must we drive — are about **the house and the rover, not about where RTAB-Map runs.** A bag
+answers all of them regardless of where it is processed. It is also **re-runnable**: tune RTAB-Map
+and re-process the same data instead of re-driving.
+
+### Step 4 — SHAKEDOWN RUN (do this before the full house)
+**3–5 minutes, one room, one deliberate loop** — drive out, around, and back over your own path.
+Exercises the whole chain end to end at low cost and tells you whether a 28-minute run is worth it.
+- **Manual mode. Slow.** Motion blur destroys feature matching; fast turns are where matching fails.
+- 🔴 **There is NO collision reflex in Manual — the operator is the only safety layer.** §4.
+- Record: `/camera/color/image_raw`, `/camera/color/camera_info`, `/camera/depth/image_raw`,
+  `/camera/depth/camera_info`, `/odom`, `/tf`, `/tf_static`.
+- Record to the SD — Step 3 proved it fits. Watch `/scan` (expect ~23 Hz) and disk free.
+
+### Step 5 — offline on the laptop
+RTAB-Map over the shakedown bag. **Judge: did loop closure fire, and is `/odom` sane through the
+turn?** If yes, the architecture is proven and the full run is justified. If loop closure never
+fires, fix that before driving the house — a longer run will not fix a bent map.
+
+### Step 6 — the full house run
+Only after Step 5 passes. Cover room by room, revisit doorways, **make deliberate LOOPS.** ~28 min
+of capacity; keep an eye on disk.
+
+### Step 7 — map back to the Pi
+Export a 2D occupancy grid; copy the grid and database back; run AMCL + Nav2 against it on the Pi —
+**localization only**, which is the cheap half (§1).
+
+---
+
+## 7. Alternative architecture — camera cabled to a laptop (open, not chosen)
+
+Proposed 2026-08-02. **Plug the Gemini 336L into a laptop that rides on/beside the rover, run
+RTAB-Map live there, copy the map back.** Kept because §2.1 makes it the likely answer if the
+shakedown shows RTAB-Map needs live tuning.
+
+**Wins:** no bag, no SD limit, no 28-min ceiling, no 23% `/scan` cost, no 94.6% CPU fight — and
+**live feedback**, so you see whether loop closure fires instead of finding out afterwards.
+**Marginal cost is low:** the laptop needs `rtabmap_ros` for offline processing *anyway*; the only
+new requirement is the Orbbec wrapper plus a USB3 port.
+
+🔴 **The camera MUST stay bolted to the rover — re-route the cable, do not hand-carry it.** The
+mount geometry is load-bearing (`cam_x 0.00`, `cam_z 0.305`, pitch 2.33° nose-down, as-built in
+`rover_geometry.md`). Hand-carrying builds a map from a trajectory the rover cannot reproduce.
+
+**The design question: where does `/odom` come from?**
+- **Preferred — laptop joins the ROS2 domain over WFB and subscribes to `/odom`.** This works
+  *because* the images no longer cross the network: `/odom` is tiny, and it was uncompressed depth
+  at ~100 Mbit/s that made live streaming impossible (§1). USB now carries the images.
+- Visual-only odometry — simpler, no network, but fragile on blank walls and motion blur.
+
+**Costs to accept:** the rover loses `/scan` and `/scan_3d` for the whole run (the Orbbec is the
+only depth sensor, and `rover-camera.service` will retry-loop unless stopped); enclosure access to
+the USB is unverified and already blocked the port `4-1` test; USB3 passive cable is ~3 m, so the
+laptop rides on or immediately beside the rover.
+
+---
+
+## 8. Open questions
+
+**Answered 2026-08-02:**
+- ~~Does 640×360 make RTAB-Map fit?~~ **No — falsified, it got worse. §2.1.**
+- ~~How much does SW depth registration cost?~~ **Camera container 34.2% → 48.9% of a core, i.e.
+  more than the resolution drop saved.** ⚠️ the baseline was a single `ps` snapshot — directional.
+- ~~Is the ~1 s delay CPU starvation or intrinsic?~~ **Provisionally INTRINSIC — a 4× cut in pixel
+  count moved it essentially not at all** (1.02 → 0.96 s worst). Fine for mapping, unusable for control.
+
+**Still open:**
+- **Is `/odom` good enough through turns?** Validated on straight-line speed only; gyro-yaw (#21) is
+  open. RTAB-Map can run on *visual* odometry instead, which sidesteps it — worth trying both.
+- **What is the drift over a full circuit, and does loop closure actually fire?** The real test of
+  whether any of this works. **Step 5 is the first chance to answer it.**
+- **How slow is slow enough** to keep motion blur from breaking feature matching?
+- **Is 92° enough in these room sizes?** ~3 m usable range costs map quality in large rooms (§3).
