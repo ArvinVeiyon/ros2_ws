@@ -1,0 +1,61 @@
+# Nav2 planning ON A SAVED MAP - the map-frame counterpart to nav2_forward.yaml.
+#
+# nav2_forward.yaml deliberately runs with global_frame: odom (no map, no
+# localization) because at the time nothing answered "where am I?". That is now
+# solved: RTAB-Map localization holds 0.06 m / 4.3 deg on this map
+# (rtabmap_localization.yaml), so the global costmap can finally live in `map`.
+#
+# This file is planning-only on purpose. The controller and bt_navigator are NOT
+# included, because #20 (yaw-rate runaway, ~21x command) still gates every
+# autonomous mode - Manual bypasses the rate controller, autonomy does not.
+# Planning a path proves the map, the costmap and the localization agree without
+# arming the vehicle or turning a wheel.
+
+map_server:
+  ros__parameters:
+    use_sim_time: false
+    yaml_filename: "/home/roz/house_map.yaml"
+    topic_name: "map"
+    frame_id: "map"
+
+planner_server:
+  ros__parameters:
+    use_sim_time: false
+    expected_planner_frequency: 1.0
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "nav2_navfn_planner::NavfnPlanner"
+      tolerance: 0.30
+      use_astar: true
+      # The map has large UNKNOWN regions - a 92 deg forward camera simply never
+      # observed most cells (48.1 m2 free vs 33604 unknown cells). Refusing to
+      # plan through unknown would make almost every goal unreachable, so allow
+      # it; the local costmap is what actually keeps the rover safe.
+      allow_unknown: true
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      use_sim_time: false
+      global_frame: map            # <- the whole point of this file
+      robot_base_frame: base_link
+      update_frequency: 1.0
+      publish_frequency: 1.0
+      resolution: 0.05
+      track_unknown_space: true
+      # Rectangular footprint, NOT robot_radius. Measured as-built: the rover is
+      # 0.450 m wide and the bumper sits 0.345 m ahead of the rotation centre, so
+      # a 0.30 m radius left most of the vehicle outside its own footprint.
+      footprint: "[[0.345, 0.225], [0.345, -0.225], [-0.385, -0.225], [-0.385, 0.225]]"
+      plugins: ["static_layer", "inflation_layer"]
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: true
+        subscribe_to_updates: true
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 3.0
+        # Matches nav2_forward.yaml. Half the rover's width is 0.225, so 0.55
+        # leaves a real margin around walls rather than clipping them.
+        inflation_radius: 0.55
+      always_send_full_costmap: true
