@@ -29,7 +29,10 @@ rtabmap:
     subscribe_rgb: true
     approx_sync: true
     queue_size: 20
-    database_path: "/home/roz/rtabmap_run3_vis_nav.db"
+    # house_map_v2.db, 2026-08-08 — the wheel-odometry replay with Grid/RayTracing on.
+    # Replaces rtabmap_run3_vis_nav.db (08-02), which was built on the FALSE map: 38
+    # loop closures accepted with rejection disabled, 34 of which fail the check.
+    database_path: "/home/roz/house_map_v2.db"
 
     # LOCALIZATION ONLY - do not add new nodes to the map.
     Mem/IncrementalMemory: "false"
@@ -46,3 +49,14 @@ rtabmap:
     RGBD/OptimizeMaxError: "0"
     RGBD/ProximityBySpace: "true"
     Rtabmap/DetectionRate: "2.0"
+
+    # Localizing does NOT need to rebuild occupancy grids - the map already has
+    # them, and map_server serves the grid for planning. Leaving this on made
+    # every frame re-segment the cloud for nothing.
+    #
+    # It also spammed a per-frame ERROR: the mapping database carries
+    # Grid/DepthRoiRatios "0.0 0.0 0.0 0.35", and RTAB-Map inherits db parameters
+    # here. At 640x360 that leaves 234 rows, which is not divisible by
+    # Grid/DepthDecimation=4, so util3d.cpp:1251 rejected the ROI and ignored it
+    # every frame. Measured 2026-08-08 on the live camera.
+    RGBD/CreateOccupancyGrid: "false"

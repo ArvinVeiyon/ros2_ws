@@ -119,16 +119,34 @@ class AutoNavMode : public px4_ros2::ModeBase {
           _last_cmd_time = _node.get_clock()->now();
         });
 
+    // Which scan feeds the brake. Default stays /scan (depthimage_to_laserscan, a
+    // single horizontal row) so behaviour is unchanged unless someone opts in.
+    //
+    // /scan_3d is the height-aware alternative from rover-scan-3d.service. It is
+    // faster (29.2 Hz / 99 ms worst gap vs 23.5 / 233) and sees the class of
+    // obstacle a horizontal row cannot -- table tops, low boxes, overhangs.
+    // Measured 2026-08-08, rover parked ~3 cm off a rack: the two agree to 6 mm
+    // (/scan 0.028 m bumper clearance, /scan_3d 0.034 m), so /scan_3d is not
+    // worse on a plain obstacle dead ahead -- but note it reads marginally LESS
+    // conservative, and that test cannot show the height-awareness that is the
+    // whole point. ⛔ Do NOT flip this until /scan_3d is shown to catch a low or
+    // overhanging object that /scan misses; see docs/rover_autonav_collision_stop.md.
+    //
+    // ⚠️ /scan_3d contains the rover's own top plate BY DESIGN. The footprint
+    // rejection in onScan() is what makes that safe -- do not bypass it.
+    _scan_topic = node.declare_parameter<std::string>("collision.scan_topic", "/scan");
+
     // Sensor data QoS (best-effort) matches typical LaserScan publishers.
     _scan_sub = node.create_subscription<sensor_msgs::msg::LaserScan>(
-        "/scan", rclcpp::SensorDataQoS(),
+        _scan_topic, rclcpp::SensorDataQoS(),
         [this](sensor_msgs::msg::LaserScan::UniquePtr msg) { onScan(*msg); });
 
     RCLCPP_INFO(_node.get_logger(),
-        "AutoNav collision-stop %s: bumper stop<%.2fm clear>%.2fm (overhang %.3fm => forward "
+        "AutoNav collision-stop %s on %s: bumper stop<%.2fm clear>%.2fm (overhang %.3fm => forward "
         "%.2fm/%.2fm) corridor=+/-%.2fm sector<=+/-%.0fdeg scan_timeout=%.2fs require_scan=%s "
         "footprint x<%.3f&|y|<%.3f (+%.3f margin) rejected blocked_yaw<=%.2frad/s",
-        _collision_enabled ? "ON" : "OFF", _stop_distance, _clear_distance, _front_overhang,
+        _collision_enabled ? "ON" : "OFF", _scan_topic.c_str(),
+        _stop_distance, _clear_distance, _front_overhang,
         _stop_distance + _front_overhang, _clear_distance + _front_overhang,
         _corridor_half_width, _sector_half * 180.0 / M_PI, _scan_timeout,
         _require_scan ? "yes" : "no", _footprint_front, _footprint_half_width, _footprint_margin,
@@ -303,6 +321,7 @@ class AutoNavMode : public px4_ros2::ModeBase {
   // collision-stop config
   bool _collision_enabled{true};
   bool _require_scan{true};
+  std::string _scan_topic{"/scan"};
   double _stop_distance{kStopDistance};
   double _clear_distance{kClearDistance};
   double _sector_half{kSectorHalfAngle};
