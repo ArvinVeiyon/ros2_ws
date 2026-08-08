@@ -44,6 +44,24 @@ Requires the udev rule `99-obsensor-libusb.rules` (already installed on this com
 - A `_low_cpu` launch variant exists if CPU gets tight.
 - `rover-camera.service` (see `systemd/install_rover_units.sh`) runs this on boot.
 
+### 🔴 LOCAL PATCH — not upstream, re-apply after any re-clone
+
+`~/codex-work/orbbec_unaligned_depth_guard_20260808.patch` (todo #26). Since the clone is
+gitignored, **a fresh checkout silently loses this and the RTAB-Map abort comes back.**
+
+The launch default is `align_mode:=SW`, so depth is aligned to colour in software. When a
+frameset arrives without a usable colour frame the wrapper skips the alignment — and then
+publishes the still-native **1280×800** depth frame on `/camera/depth/image_raw` anyway, where
+everything downstream assumes the aligned 640×360. RTAB-Map asserts depth ≤ colour in
+`Memory.cpp::createSignature()` and **aborts the process**, killing localization outright.
+Upstream already knows unaligned depth reaches this point — it guards `logFrameInfoOnce()`
+against exactly this case — but it guards only the *logging*, not the *publishing*.
+
+The patch adds `isDepthAlignedToTarget()` and drops the depth image **and** the point cloud for
+such a frameset, with a throttled WARN so the drop is never silent. `/camera/depth/
+image_unaligned` still carries the native frame, which is what that topic is for. No effect when
+`depth_registration` is off.
+
 ## ldlidar_stl_ros2
 
 `src/ldlidar_stl_ros2/` is a nested git repo, deliberately left untracked. The STL-19 hardware was
