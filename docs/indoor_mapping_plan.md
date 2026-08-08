@@ -326,3 +326,46 @@ confirms the vertical flip independently of the PGM-side check in §9.1.
 
 Parameters now live in `src/rover_nav2/config/rtabmap_mapping.yaml` — promoted out of session
 scratch so this is reproducible.
+
+### 9.4 🔴 RTAB-Map localization aborts on a one-frame depth glitch (2026-08-08)
+
+Localization measured on the Pi against `house_map_v2.db`, live camera, `vision_streaming` active:
+**~27.5% of ONE core steady-state** (46% startup transient), 6.7% RAM, **RTAB-Map 71–87 ms per cycle
+against a 0.5 s budget (~16% duty)**, delay 0.19 s, 291 nodes in working memory,
+`/localization_pose` 1.8 Hz, **`map->odom` published** — the AMCL replacement works, with no
+measurable `/scan` cost. Against mapping's `rgbd_odometry` at 79.6% with `/scan` halved, it fits
+with room to spare. ⚠️ **Rover was stationary — this is a floor, not a ceiling.**
+
+**But it died after ~13 minutes**, FATAL in `Memory.cpp:4579::createSignature()`:
+`image=(640/360)` vs `depth=(1280/800)`. RTAB-Map requires depth ≤ colour, and the assertion
+**aborts the process** (`terminate called after throwing UException`) — not a dropped frame.
+
+**Confirmed by monitoring `/camera/depth/image_raw` for 15 min:** at t=341.5 s the topic emitted
+**one 1280×800 frame** and was back to 640×360 0.2 s later. `/camera/depth/image_unaligned` runs at
+exactly 1280×800, so the glitch is the *unaligned* stream briefly surfacing on the aligned topic.
+
+⚠️ **Correction:** an earlier draft said the unit passes no `depth_registration` argument. **Wrong —
+I read only the base unit.** The drop-in `10-point-cloud-decimation.conf` sets
+`depth_registration:=true color_width:=640 color_height:=360 color_fps:=15 depth_fps:=15`.
+Registration IS on, which is exactly why a *stray unaligned* frame is so surprising.
+
+⇒ **This gates any mapped navigation.** One bad frame in ~6 minutes kills localization outright, so
+a supervisor/restart is a bandage, not a fix. Options, in order of preference: force
+`depth_registration` explicitly in the unit; drop mismatched frames in a relay ahead of RTAB-Map;
+or pin the depth profile so the native stream cannot exceed the colour frame.
+
+### 9.5 🔴 THE CAMERA IS STILL IN MAPPING CONFIGURATION
+
+The same drop-in carries its own warning: **"REVERT color_fps/depth_fps BEFORE ANY AUTONOMOUS
+DRIVING. depth_fps:=15 halves /scan (~30 -> ~15 Hz), which widens the collision-reflex reaction
+gap."** That revert has not happened — `depth_fps:=15` is live right now.
+
+**This explains a measurement I got wrong today.** I read `/scan` at 15.7 Hz and `/scan_3d` at
+14.1 Hz against a remembered 23.5 / 29.2, and attributed the shortfall to load from my own session.
+It is not load — **it is `depth_fps:=15`, by design, left over from the mapping run.**
+
+⇒ **Revert the fps lines before any AutoNav driving**, including the guarded-manual case: the reflex
+is live in AutoNav and is running at half its intended update rate. Restore from
+`/etc/systemd/system/10-point-cloud-decimation.conf.bak-20260802`, keeping the decimation and
+registration lines, then `systemctl daemon-reload && systemctl restart rover-camera` — and run the
+half-dead camera check afterwards.
