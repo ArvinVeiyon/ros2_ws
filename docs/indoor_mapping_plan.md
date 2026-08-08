@@ -297,11 +297,32 @@ carries **no origin**. Both are recovered and validated in §9.1.
    **285 of 292 free, 7 occupied, 0 unknown** — the 7 are poses hard against furniture at 5 cm
    resolution. This single check confirms the origin, the flip, and the colour convention at once.
 
-### 9.2 What is still wrong
+### 9.2 Wall geometry — MEASURED, and better than it looks
 
-Walls come out **0.3–0.5 m thick and doubled in places** — residual pose error, not a grid setting.
-That is the next thing to attack if the map is not good enough for planning; it is a graph problem
-(loop closure count, `RGBD/OptimizeMaxError`), not an occupancy one.
+⚠️ An earlier draft of this section said "walls 0.3–0.5 m thick and doubled". **That was eyeballed
+off the rendered image and is wrong.** Measured two independent ways over the occupied cells:
+
+| | distance-transform ridge (2 × dist to nearest non-occupied) | run-length |
+|---|---|---|
+| median | **0.10 m** | 0.10 m horiz / 0.15 m vert |
+| p90 | 0.22 m | 0.45 / 0.50 m |
+| max | 0.71 m | 1.85 / 2.45 m |
+
+**The typical wall is 2 cells — 0.10 m, which is about the floor for a 0.05 m grid.** Only the top
+decile is thicker, and the maxima are furniture and clutter, not doubled walls. The visually
+prominent black blobs are what made the eyeball estimate wrong.
+
+⇒ **Map geometry is NOT the bottleneck.** Do not spend effort on the pose graph
+(`RGBD/OptimizeMaxError`, closure count) on the strength of how the picture looks — measure the
+thickness distribution first and only act on the tail if a planner actually complains.
+
+### 9.3 Verified end-to-end in `map_server`
+
+Not just geometrically validated — actually loaded. `nav2_map_server` on `ROS_DOMAIN_ID=42`
+configures, activates, and publishes `/map`: **257 × 221 @ 0.05 m, origin (−10.554, −4.843)**,
+**unknown 53.4% (30 349) / free 34.1% (19 345) / occupied 12.5% (7103)**. All 292 optimized poses
+fall in bounds — **285 free, 7 occupied, 0 unknown** — on the published `OccupancyGrid`, which
+confirms the vertical flip independently of the PGM-side check in §9.1.
 
 Parameters now live in `src/rover_nav2/config/rtabmap_mapping.yaml` — promoted out of session
 scratch so this is reproducible.
