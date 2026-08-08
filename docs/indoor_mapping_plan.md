@@ -238,3 +238,70 @@ laptop rides on or immediately beside the rover.
   whether any of this works. **Step 5 is the first chance to answer it.**
 - **How slow is slow enough** to keep motion blur from breaking feature matching?
 - **Is 92° enough in these room sizes?** ~3 m usable range costs map quality in large rooms (§3).
+
+---
+
+## 9. RESULT — 2026-08-08. The map is built, and the last defect was ray tracing
+
+`house_map_v2.pgm` / `.yaml` (+ `house_map_v2.db`) is the first map on this vehicle that reads as
+a floor plan. It comes from the wheel-odometry replay of the 08-07 bag, plus one parameter.
+
+**The defect: `Grid/RayTracing` was `false`.** With it off, RTAB-Map writes free cells only where
+it segments *ground* points. On this rover that is almost nothing — the camera sits at 0.305 m and
+sees very little floor, and the numbers show it: over 480 nodes the stored cells hold **17 210
+ground points against 550 146 obstacle points, a 32:1 ratio**. So the grid became "every surface
+above `Grid/MaxGroundHeight` = 0.10 m", with no carved interiors:
+
+| | RayTracing false | **RayTracing true** |
+|---|---|---|
+| occupied | 34.2 % (19 300 cells) | **12.5 %** |
+| free | 3.9 % (2 190 cells) | **34.1 %** |
+| unknown | 61.9 % | 53.4 % |
+
+⚠️ **Ray tracing is not optional on a low-mounted RGB-D rover.** The usual reason to leave it off —
+"the sensor already reports free space" — assumes a lidar sweeping the floor plane. It does not
+hold here.
+
+⚠️ **`Grid/DepthRoiRatios: "0.0 0.0 0.0 0.35"` was added for correctness and changes the map by
+0.1 %** (occupied 12.4 → 12.5 %). It was the one hole in the plate-masking family
+(`Kp/RoiRatios` ✅ · `Vis/RoiRatios` ✅ · `Grid/DepthRoiRatios` ❌ · `*/DepthAsMask` ✅). Do not
+expect it to fix anything.
+
+### 🔴 Reading the exported PGM — this cost a session
+
+`rtabmap-reprocess -g2` writes RTAB-Map's own greyscale convention, **not** Nav2's:
+
+| | RTAB-Map export | Nav2 `map_server` |
+|---|---|---|
+| unknown | **89** | 205 |
+| free | **178** | 254 |
+| occupied | **0** | 0 |
+
+Only `occupied` agrees. `0` is the *largest* class in a bad map and the *smallest* in a good one,
+so reading `0` as free inverts the diagnosis exactly — that is how the 08-07 session concluded
+"walls are not marked occupied" when the truth was "almost everything is marked occupied".
+**Disambiguate by mechanism, not by eye:** enabling `Grid/RayTracing` can only ever *add* empty
+cells, so whichever value grows is free.
+
+The export also has **y increasing with row index**, the opposite of the PGM/Nav2 convention, and
+carries **no origin**. Both are recovered and validated in §9.1.
+
+### 9.1 Turning the export into a Nav2 map
+
+1. Flip vertically (`nav[::-1]`) and remap 178→254, 89→205, 0→0.
+2. Recover the origin by rasterising the stored `obstacle_cells` at the optimized poses
+   (`rtabmap-export --poses --opt 2`) and correlating that against the export's occupied mask.
+   Result: **origin `[-10.554, -4.843, 0.0]`**, 0.05 m cells, 257 × 221 — 5846 of 7103 occupied
+   cells overlap, so the offset is unambiguous.
+3. **Validate on the trajectory, always.** Every optimized pose must land on a free cell:
+   **285 of 292 free, 7 occupied, 0 unknown** — the 7 are poses hard against furniture at 5 cm
+   resolution. This single check confirms the origin, the flip, and the colour convention at once.
+
+### 9.2 What is still wrong
+
+Walls come out **0.3–0.5 m thick and doubled in places** — residual pose error, not a grid setting.
+That is the next thing to attack if the map is not good enough for planning; it is a graph problem
+(loop closure count, `RGBD/OptimizeMaxError`), not an occupancy one.
+
+Parameters now live in `src/rover_nav2/config/rtabmap_mapping.yaml` — promoted out of session
+scratch so this is reproducible.

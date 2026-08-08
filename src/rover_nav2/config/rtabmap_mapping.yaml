@@ -1,0 +1,60 @@
+# RTAB-Map MAPPING mode - builds the occupancy grid that rtabmap_localization.yaml
+# then relocalizes against. Promoted out of session scratch 2026-08-08 after the
+# wheel-odometry replay and the ray-tracing fix; these values are measured, not guessed.
+#
+# Run it against a recorded bag, not live: rgbd_odometry alone costs 79.6% of a core
+# and halves /scan. Record on the Pi, map offline, localize on the Pi.
+#
+# ALWAYS replay under ROS_DOMAIN_ID=42. rover-odometry and rover-camera are live on
+# domain 0 and publish /tf and /camera/* - a replay there collides with the rover.
+#
+# odom comes from TF, not the /odom message: rover_odometry publishes a CONSTANT pose
+# covariance and RTAB-Map derives link information from the CHANGE in covariance, gets
+# zero, and trips a fatal in Link.cpp::setInfMatrix.
+
+rtabmap:
+  ros__parameters:
+    use_sim_time: true             # bag replay with --clock
+    frame_id: "base_link"
+    map_frame_id: "map"
+    odom_frame_id: "odom"          # wheel odom from TF - see header
+    odom_tf_linear_variance: 0.001
+    odom_tf_angular_variance: 0.001
+    publish_tf: true
+    subscribe_depth: true
+    subscribe_rgb: true
+    approx_sync: true
+    queue_size: 20
+
+    # --- graph ---------------------------------------------------------------
+    # Planar rover. Solved in full 6-DoF the odometry drifted up to 3.95 m
+    # vertically; Force3DoF pins the z span to exactly 0.00.
+    Reg/Force3DoF: "true"
+    # 0 DISABLES loop-closure rejection. That is what let 34 bad closures fold the
+    # 08-02 map shut (trajectory squeezed 6.37 -> 5.51 m in x). 3.0 is the default
+    # and is correct here. rtabmap_localization.yaml deliberately uses 0 - do not
+    # copy this value over there, localization needs a large map->odom correction.
+    RGBD/OptimizeMaxError: "3.0"
+    RGBD/ProximityBySpace: "true"
+    Rtabmap/DetectionRate: "2.0"
+
+    # --- matching ------------------------------------------------------------
+    # The bottom 35% of every colour frame is the rover's own top plate.
+    Kp/RoiRatios: "0.0 0.0 0.0 0.35"
+    Vis/RoiRatios: "0.0 0.0 0.0 0.35"
+    Vis/MinInliers: "12"
+
+    # --- occupancy grid ------------------------------------------------------
+    RGBD/CreateOccupancyGrid: "true"
+    # THE fix, 2026-08-08. With ray tracing off, free space came only from ground
+    # points and the map was 34.2% occupied / 3.9% free - every surface above 10 cm,
+    # with no carved interiors. On: 34.1% free / 12.4% occupied, and it reads as a
+    # floor plan. Ground points are sparse here (17k vs 550k obstacle points) because
+    # a 0.305 m camera sees little floor, so ray tracing is not optional on this rover.
+    Grid/RayTracing: "true"
+    Grid/MaxGroundHeight: "0.10"
+    Grid/MaxObstacleHeight: "1.5"
+    Grid/RangeMax: "4.0"
+    # Same plate mask as Kp/Vis above - this was the one hole in the ROI family.
+    # Correctness only: a 0.00 -> 0.35 sweep moves the map by ~0.1%.
+    Grid/DepthRoiRatios: "0.0 0.0 0.0 0.35"
