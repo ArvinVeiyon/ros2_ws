@@ -396,7 +396,7 @@ Safety tests gate capability tests. **Pass criteria, not opinions.**
 
 | ID | Test | Pass criterion | Status |
 |---|---|---|---|
-| **S1** | Kill switch in AutoNav | Wheels stop immediately, disarms | ✅ **PASSED 2026-07-22** — see below |
+| **S1** | Kill switch in AutoNav | Wheels stop immediately, disarms | ✅ **PASSED** 2026-07-22, **re-confirmed 2026-08-10** — see below |
 | **S2** | Sensor loss while driving | Forward blocked within 0.5 s | ⬜ untested |
 | **S3** | Yaw loop diagnosis | Open vs closed loop | ✅ solved — friction deadband + windup |
 | **T1** | Speed tracking, 5 s at 0.2 m/s | Sustained `/odom` within ±20% | ✅ validated |
@@ -407,7 +407,16 @@ Safety tests gate capability tests. **Pass criteria, not opinions.**
 | **T6** | Map build + re-localize | Pose recovered after restart, no operator input | ⚠️ map good; **pose not fairly measured** |
 | **T7** | Return to base | Routes home from an arbitrary mapped point | ⬜ not run |
 
-> ✅ **S1 RESOLVED 2026-08-09 — it passed on 2026-07-22 and the "untested" record was wrong.**
+> ✅✅ **S1 RE-CONFIRMED END-TO-END 2026-08-10 on the current stack.** With `rover-ekf-bridge`
+> running, AutoNav engaged and held (`nav_state 23`), the rover drove at 0.15 m/s reaching
+> **155 rpm peak**, ch8 was hit, and it **disarmed with the wheels at zero in the same 50 Hz
+> sample** — measured latency 0 ms, i.e. **under 20 ms**, which is the resolution limit of the
+> measurement rather than the switch. `rover-autonav-mode` did not restart during the run.
+> Tool: `tools/s1_kill_test.py` (never arms, never disarms; aborts before motion if AutoNav
+> does not hold). This reproduces the July result on the camera-gyro heading, the corrected
+> odometry scale and the current tune.
+>
+> ✅ **S1 originally passed 2026-07-22 — the "untested" record was wrong.**
 > The L2 floor test log records *"kill switch (ch8) works ARMED inside AutoNav — now confirmed
 > live"*, and independently, during a software-armed run in the same session the rover drove at a
 > wall and the operator *"stopped it with the KILL switch (ch8) before impact"*. Ch8 stopped a
