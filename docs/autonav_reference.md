@@ -1,0 +1,412 @@
+# Vind-Roz AutoNav — Technical Reference
+
+> **Rev. 2026-08-09.** The stable engineering reference for autonomous navigation on the Vind-Roz
+> rover: what it is meant to do, what it physically is, which numbers are measured and trustworthy,
+> and which constraints cannot be designed around. Written to be cited by section, not read once.
+>
+> Companion to `docs/autonomy_plan.md` (modes and tests), `docs/rover_geometry.md` (the authority on
+> every dimension) and `docs/rover_yaw_response.md` (the authority on yaw).
+>
+> **Every number marked measured has a method recorded alongside it. Treat anything without one as
+> an assumption awaiting a test.**
+
+| § | Section |
+|---|---|
+| [1](#1-goal-and-scope) | Goal and scope |
+| [2](#2-the-four-questions) | The four questions |
+| [3](#3-platform-inventory) | Platform inventory |
+| [4](#4-geometry-and-frames) | Geometry and frames |
+| [5](#5-calibrated-constants) | Calibrated constants |
+| [6](#6-odometry-and-heading) | Odometry and heading |
+| [7](#7-motion-envelope) | Motion envelope |
+| [8](#8-perception) | Perception |
+| [9](#9-mapping-and-localization) | Mapping and localization |
+| [10](#10-known-faults) | Known faults |
+| [11](#11-inviolable-rules) | Inviolable rules |
+| [12](#12-test-ladder-and-status) | Test ladder and status |
+| [13](#13-method-notes) | Method notes |
+
+---
+
+## 1. Goal and scope
+
+"Autonomous" is not one capability. State **how autonomous, for which application**, before
+building — the answer changes the hardware and the safety case.
+
+### Application A — indoor surveillance · FIRST TARGET
+
+The operator picks a room or a patrol route on a saved house map and presses go. The rover
+localizes itself, routes there, avoids people and moved furniture, streams video, returns to base,
+repeats.
+
+Everything above "drive 3 m forward" in this application is a **localization** problem, not an
+obstacle-avoidance one.
+
+### Application B — outdoor GPS mission · LATER
+
+Drive to a GPS waypoint in open ground with 360° obstacle avoidance and no operator. Blocked on
+hardware (DroneCAN GPS, 360° lidar) and on Application A being proven first.
+
+> ⚠️ **Scope boundary.** This rover shares a flight controller and a companion computer with an
+> aerial drone on a different airframe. **Any FC parameter change made for the rover must be
+> reverted before flight**, and is called out where it applies.
+
+---
+
+## 2. The four questions
+
+Every autonomous vehicle answers four questions. Ours are in very different states, and confusing
+them wastes weeks.
+
+| # | Question | Provided by | State |
+|---|---|---|---|
+| **Q1** | Where am I? | Localization | ⚠️ works at mapped viewpoints; **not yet fairly measured** |
+| **Q2** | What is around me? | Perception | ✅ forward sector only, permanently |
+| **Q3** | How do I get there? | Planning | ⬜ configured, unproven |
+| **Q4** | What if it goes wrong? | Failsafe | ⚠️ kill switch untested in AutoNav |
+
+> 🔑 Q1 has historically been treated as gating everything. It gates **mapped patrol**. It does
+> **not** gate point-and-go, which needs no map and is available whenever the safety tests pass.
+
+---
+
+## 3. Platform inventory
+
+| Element | Part | Notes |
+|---|---|---|
+| Companion | Raspberry Pi 5, BCM2712, 4-core, 8 GB | Ubuntu 24.04.1 aarch64, ROS 2 Jazzy |
+| Flight controller | Custom Pixhawk 6X-RT (in-house PCB) | NXP i.MX RT1176 M7+M4, PX4 `pxlabs-v1.17.0-2.0.0` |
+| IMUs | ICM-42688-P · ICM-45686 · BMI088 | three independent, ~400 Hz each |
+| Magnetometer | BMM350, 50 Hz | 🔴 **suspect** — single, internal, inside a metal body |
+| Depth camera | Orbbec Gemini 336L | USB3, 640×360 registered depth + colour, min range 0.308 m |
+| Drive | 4× VESC over DroneCAN, skid-steer | addresses 10–13; ESCs doze at rest |
+| Rangefinder | TFmini, `ttyAMA2` | 0.3–12 m, **drone-bound** |
+| 360° lidar | LDRobot STL-19 | ⬜ **not fitted** — allocated to the drone |
+
+### CPU budget — the binding constraint
+
+Four cores, and perception fills them. Measured steady state with the full stack plus localization:
+
+```
+rtabmap (localization)   ~79%      camera wrapper          ~57%
+wheel_odometry           ~53%      MicroXRCE agent         ~20%
+claude (tooling)       55-86%      rc_control              ~11%
+```
+
+⛔ **There is no GPU escape.** The Pi 5 has no H.264 encoder (`rpivid` is decode-only),
+`h264_v4l2m2m` reports no valid device, `h264_vaapi` has no driver, `card0` is `v3d` (3D only).
+Everything heavy is already multi-threaded, so more threads cannot help. The only real offload would
+be a camera with onboard H.264.
+
+---
+
+## 4. Geometry and frames
+
+ROS REP-103 throughout: **+x forward, +y left, +z up**. `base_link` is the skid-steer rotation
+centre, on the ground plane.
+
+| Dimension | Value | Note |
+|---|---|---|
+| Top plate length | **0.730 m** | the widest and longest extent — **this is the footprint** |
+| Top plate width | **0.450 m** | wheels sit *inboard* of the plate |
+| Ground → top plate | **0.235 m** | |
+| Track (hub to hub) | **0.310 m** | ⚠️ NOT the widest extent |
+| Wheelbase (hub to hub) | 0.430 m | ⚠️ **never use as track** |
+| Rotation centre → front plate tip | **0.345 m** | defines where `base_link` sits |
+| `front_overhang` (scan origin → bumper) | **0.337 m** | ✅ measured: parked square to a wall, zero gap, 178 consecutive scans with min == max |
+| Corridor half-width | **0.275 m** | plate half-width 0.225 + 50 mm heading margin |
+| `base_link → camera_link` | **(0.000, 0.000, 0.305) m** | camera is centred |
+| Floor forward tilt | **+0.37°** | RANSAC plane fit |
+| Camera roll residual | **1.54°** | ⚠️ **uncorrected**, from `z = +0.00638x +0.02681y −0.01203`, one location only |
+
+**Why the camera stays centred.** Centring puts the 0.300 m minimum-range circle 45 mm *behind* the
+bumper, so there is no blind strip ahead of the vehicle. It trades a known, static, croppable object
+(the rover's own plate in frame) for a genuine blind spot. Moving the camera breaks `cam_x = 0`,
+`front_overhang` and the TF chain simultaneously.
+
+> ⛔ **Never derive a dimension — look it up.** Two shipped bugs came from assumed geometry: the
+> wheelbase used as the track (under-reporting every yaw rate by 28%), and a footprint built from
+> the wheelbase rather than the plate. Both reached running code.
+
+---
+
+## 5. Calibrated constants
+
+Every value here was measured against an external reference. **The method matters as much as the
+number** — it tells you when the value stops being valid.
+
+| Constant | Value | How it was obtained |
+|---|---|---|
+| `erpm_to_ms` | **0.003900** | Wall-referenced, 5 powered runs both directions, 0.146–0.364 m/s. Odometry over-reported ground distance by **18.8%** (mean 1.188, sd 0.029). **Includes mean slip — re-measure on a different floor.** |
+| `track_width` | 0.310 m | Tape, hub centre to hub centre |
+| `deadband_erpm` | 5.0 | Standstill noise: 2930 samples per wheel, min 0, max 0 |
+| Camera gyro bias | +0.72 °/s | Large but stable; re-estimated live at rest because it creeps thermally (+0.008 °/s over 3 min) |
+| Camera gyro scale | 0.9996 – 1.0012 | Three full circles against a wall at 6.1, 9.3 and 19.5 °/s. **Not rate-dependent.** |
+| Camera clock rate | +0.0022% of ROS time | 0.008° per revolution. ⚠️ gyro stamps are **device uptime**, not ROS time |
+| Colour ↔ depth sync | 0.3 ms | From a recorded bag |
+
+### PX4 rover parameters
+
+```
+RO_YAW_RATE_P     0.08        RO_MAX_THR_SPEED   0.6    m/s
+RO_YAW_RATE_I     0.0         RO_YAW_P           2.0
+RO_YAW_RATE_CORR  1.8         RO_SPEED_LIM       0.70   m/s
+RO_YAW_RATE_LIM   85.9        ⚠ deg/s, NOT rad/s
+```
+
+> 🔴 **`RO_YAW_RATE_I = 0` is deliberate.** Integral windup was one of the two causes of the yaw
+> problem. **Never restore it to 0.1.** Re-read all of these off the FC after every reboot —
+> `tools/set_param.py NAME` reads and writes over MAVLink and refuses while armed.
+
+---
+
+## 6. Odometry and heading
+
+**Wheels for distance, a gyro for heading.** This is a skid-steer: it has no steering axle and can
+only rotate by forcing all four tyres to scrub sideways. Slip is not a defect to minimise, it is the
+turning mechanism — which means `(v_right − v_left) / track` measures a quantity the wheels
+**cannot observe at all**.
+
+### Heading source priority
+
+| Source | Drift (stationary) | Status |
+|---|---|---|
+| `camera_gyro` — Gemini 336L, 195 Hz | **0.0015 – 0.0028 °/s** | ✅ **default**, unaffected by driving |
+| `gyro` — PX4 EKF attitude | 0.005 – **1.106** °/s | 🔴 fallback only — erratic, sign flips |
+| `wheels` | n/a | ⛔ cannot work — diagnostic only |
+
+The flight-controller heading was measured, against a wall, inventing **+23.23° in 21 seconds** on a
+rover confirmed stationary, and **+27.1° across one 4-minute session**. It is erratic rather than
+biased — the sign flips, and it is not proportional to motor effort — so **no gain or offset can
+compensate it**.
+
+**The gyros are not at fault.** Three independent IMUs from three vendors do not drift 4000°/hour
+together, and the stored `CAL_GYRO*_ZOFF` values are normal (−0.100 / +0.242 / −0.038 °/s). What
+degrades is the EKF's **fused yaw**. Two untested suspects:
+
+- the single internal magnetometer (`EKF2_MAG_TYPE=1`, the only yaw observer indoors)
+- GPS aiding (`EKF2_GPS_CTRL=7`, with `vehicle_gps_position` publishing at 3.3 Hz)
+
+### Implementation requirements for the camera-gyro path
+
+- Rotate into `base_link` **via TF**, never a hand-derived axis map — a remount must not silently
+  invert the sign.
+- Integrate **`header.stamp` deltas, never arrival time.** An arrival-time probe under-read rotation
+  by up to 4.5% because dropped samples at peak CPU applied the following lower rate across the gap.
+- **Refuse to integrate across gaps** (>50 ms) and count them.
+- Re-estimate bias from a rolling at-rest window; do not calibrate once.
+
+> ⚠️ **A gyro gives no absolute heading.** It integrates rate. It fixes map-building drift; it does
+> not tell you which way is north. Also: this **couples odometry to `rover-camera`**, which is the
+> component that degrades silently (§10).
+
+---
+
+## 7. Motion envelope
+
+What this vehicle physically can and cannot do. Plan around it; it will not be tuned away.
+
+### Yaw: a large friction deadband
+
+| steer output | 0.055 | 0.348 | 0.425 | 0.484 | 0.573 | 0.935 |
+|---|---|---|---|---|---|---|
+| yaw rate (rad/s) | 0 | 0 | 0 | **0.67** | **1.51** | **4.11** |
+
+```
+above the deadband:   yaw_rate ≈ 7.6 × (steer − 0.40)   rad/s
+minimum achievable:   ≈ 0.67 rad/s  (38 °/s)
+time constant:        ≈ 2 s
+```
+
+**There is no slow rotation.** Below ~38 °/s the rover does not turn at all; above it, it snaps.
+Design for **coarse discrete turns at ~1.2 rad/s**. A short pulse still gives a small *angle* — the
+floor is on rate, not on angle — so **tap-and-stop** is how to make small heading changes.
+
+### Speed
+
+Drivetrain reaches ~0.58–0.60 m/s. Mapping and careful work run at 0.15–0.25 m/s. Powered runs slip
+~19% against ground truth (§5).
+
+> 🔑 **PX4 Manual bypasses the yaw-rate loop entirely.** Firmware-verified: `manual()` publishes a
+> *steering* setpoint; only `acro()` publishes a rate setpoint. So manual drives are **not
+> yaw-gated** — but the collision reflex **does not run in Manual either**, and the operator is then
+> the only safety layer. AutoNav publishes speed + rate, so the yaw loop gates every AutoNav task.
+
+---
+
+## 8. Perception
+
+A 2D lidar sees one horizontal slice at one height. A depth camera sees a 3D volume ahead. They are
+complementary, not redundant — and we only have the second.
+
+| Obstacle | 2D lidar | Depth camera |
+|---|---|---|
+| Table top, desk edge | ❌ passes underneath | ✅ |
+| Chair seat, shelf, overhang | ❌ | ✅ |
+| Low box, threshold, cable | ❌ passes over | ✅ |
+| Stairs / drop-off | ❌ | ✅ |
+| Wall, door frame | ✅ | ✅ |
+| **Behind and beside** | ✅ | ❌ **physically cannot** |
+
+The depth camera covers a **92° forward wedge** with ~4 m of usable range. The other **268° is
+unmeasurable, permanently**, until a 360° lidar is fitted. That single fact drives most of §11.
+
+### Scan pipeline
+
+```
+/camera/depth/image_raw ──▶ depthimage_to_laserscan ──▶ /scan      (has base_link→camera_link TF)
+/camera/depth/points    ──▶ pointcloud_to_laserscan  ──▶ /scan_3d   (NO TF, parallel)
+```
+
+`/scan` is the one with the transform — **never repoint `rover-scan.service` at `/scan_3d`.**
+`/scan_3d` is steadier close in (6 mm versus 74 mm) and agrees to 8 mm at 1.34 m, but it **contains
+the rover's own top plate by design** — every consumer must reject its own footprint.
+
+> ⛔ **Radial range cuts cannot express a rectangular body.** A dropped ray reads as *infinite
+> clearance*. The scan pipeline was fail-**open** until this was closed with `range_min` 0.31 plus a
+> per-ray rectangular footprint reject. **Check any new consumer for the same failure.**
+
+---
+
+## 9. Mapping and localization
+
+**RTAB-Map RGB-D, not slam_toolbox.** slam_toolbox does 2D scan matching and needs a 360° ring; 92°
+gives it too little overlap. RTAB-Map matches visual features in 3D and closes loops by *recognising
+places*, which is designed for a narrow forward FOV. **The limitation is the algorithm choice, not
+the sensor.**
+
+### Pipeline
+
+```
+record a bag on the Pi  ──▶  replay-map at 0.3× (ROS_DOMAIN_ID=42)  ──▶  localize on the Pi
+```
+
+Live-streaming RGB-D off the vehicle is not viable: `image_transport` offers only `raw_pub` here, so
+it is ~100 Mbit/s rather than 13. **SD write ceiling is 27.4 MB/s**, which is why mapping bags are
+recorded at 15/15 fps (17.3 MB/s) rather than 30/30 (~34 MB/s).
+
+### What made the difference
+
+| Cause | Effect on the map | Fix |
+|---|---|---|
+| FC heading drift | up to 1.1 °/s of phantom rotation | camera gyro (§6) |
+| 19% odometry over-report | **every wall drawn several times** — 4.3 m of error in a 3.2 × 3.9 m room | `erpm_to_ms` (§5) |
+| Plate mask silently ignored | 11.8% of the cloud was the rover's own body, traced along the driven path | `Grid/DepthDecimation: 2` |
+
+> ⚠️ **The decimation trap.** `Grid/DepthRoiRatios` crops the bottom 35% of each frame to hide the
+> plate. RTAB-Map requires the cropped height to divide **exactly** by `Grid/DepthDecimation`. At
+> 640×360 the crop leaves 234 rows, and 234/4 = 58.5 — so the mask was **discarded on every frame**
+> with only a log line to show for it. 234/2 = 117 works. **Recheck whenever the colour height
+> changes.**
+
+### Localization settings that matter
+
+`RGBD/MaxOdomCacheSize: "0"`. The default requires a second localization corroborated against the
+odometry travelled in between; with a drifting heading that never converges and localization waits
+indefinitely. Setting 0 accepts the first fix. **Once heading is trustworthy this is worth
+revisiting** — corroboration is a real quality filter when the odometry deserves trust.
+
+---
+
+## 10. Known faults
+
+| Fault | Signature | Action |
+|---|---|---|
+| **Camera colour collapses under CPU load** | Colour rate falls (19.9 → 11.2 Hz in six minutes) while depth holds. Every health check still passes; no error logged. | Measure the colour rate; restart `rover-camera` |
+| **Half-dead camera restart** | Unit active, parameters answer, gyro and accel streams start — **depth and colour never do**, silently. `systemctl is-active` does not catch it. | Restart again; verify with `tools/camera_restart_check.py` |
+| **`/odom` dies at rest** | VESCs doze; only address 13 stays online. Intermittent. | Handled — `publish_at_rest` emits a genuine zero-velocity sample |
+| **Tooling steals cores** | `claude` 55–86%, its npm update check 84%, the pemmican MOTD hook 100% | Both hooks disabled; `tools/cpu_catcher.sh` traps the rest |
+| **Glossy dark surfaces** | A blue steel almirah maps ~1.5× thicker than matte walls and lands closer than it is. *Suspected, not proven.* | Errs toward the rover — **fails safe** for navigation |
+
+> ⛔ **A restart does not clear a CPU-starvation latch.** The documented video-pipeline failure is
+> identical in appearance to a wedged camera and is cured only by removing the CPU contention first.
+> **Stop the competing consumers, then restart.**
+
+---
+
+## 11. Inviolable rules
+
+These follow from physics and geometry, not from preference. **Each has already cost something.**
+
+1. **Never reverse into unseen space.** The depth camera is forward-only and the collision reflex
+   cannot see behind. There is no sensor that would catch it. Reversing is an operator-supervised
+   action, never an autonomous one.
+
+2. **Never clear a spin from any `/scan`.** A 92° wedge cannot certify the 268° the rover would
+   rotate through.
+
+3. **Nav2's default spin and back-up recoveries must stay deleted.** They are precisely the two
+   manoeuvres this vehicle cannot clear. A stock Nav2 config reintroduces them silently.
+
+4. **The kill switch must be tested in AutoNav before the first armed autonomous drive.** It is the
+   backstop for every armed test after it, and it has never been exercised in that mode. The test
+   costs ten minutes.
+
+5. **Never key a camera by `/dev/videoN` or by-id.** Use `usbcam-<vidpid>-<serial>-i<iface>`. The
+   Orbbec's video nodes appear and vanish with `rover-camera`, and the Pi's own `rpivid` and
+   `pispbe-*` devices renumber them.
+
+6. **Never record resolution, frame rate or bitrate as fact.** Read them live. **Negotiated is not
+   delivered** — colour has negotiated 30 fps while delivering 8.
+
+---
+
+## 12. Test ladder and status
+
+Safety tests gate capability tests. **Pass criteria, not opinions.**
+
+| ID | Test | Pass criterion | Status |
+|---|---|---|---|
+| **S1** | Kill switch in AutoNav | Wheels stop immediately, disarms | 🔴 **untested** |
+| **S2** | Sensor loss while driving | Forward blocked within 0.5 s | ⬜ untested |
+| **S3** | Yaw loop diagnosis | Open vs closed loop | ✅ solved — friction deadband + windup |
+| **T1** | Speed tracking, 5 s at 0.2 m/s | Sustained `/odom` within ±20% | ✅ validated |
+| **T2** | Straight goal, clear 2 m corridor | Arrives within 0.20 m, no collision stop | ⬜ not run |
+| **T3** | One offset obstacle | Routes around, keeps inflation clearance | ⬜ not run |
+| **T4** | Fully blocked corridor | Stops cleanly, reports failure, **does not spin or reverse** | ⬜ not run |
+| **T5** | Dynamic obstacle | Stops before contact | ⬜ not run |
+| **T6** | Map build + re-localize | Pose recovered after restart, no operator input | ⚠️ map good; **pose not fairly measured** |
+| **T7** | Return to base | Routes home from an arbitrary mapped point | ⬜ not run |
+
+```
+S1 kill ─▶ S2 sensor loss ─▶ T1 speed ─▶ T2 straight goal
+                                             │
+     S3 yaw ─────────────────────────────────┴─▶ T3 ─▶ T4 ─▶ T5 ─▶ T6/T7
+```
+
+---
+
+## 13. Method notes
+
+How to get trustworthy numbers on this machine. **Each of these was learned by getting it wrong
+first.**
+
+- **Use an absolute reference.** Park square to a flat wall and RANSAC-fit a line to `/scan`:
+  perpendicular distance to ±1 mm, bearing to ±0.26°, completely independent of the wheels. This
+  single rig found the heading fault, the odometry scale error and the gyro validation.
+  Tool: `tools/wall_probe.py`.
+
+- **Check what else is running first.** No rate or CPU number means anything until
+  `ps -eo pid,pcpu --sort=-pcpu` has been read. A "7.5 Hz cloud" was once a runaway at 72.7%.
+
+- **Start the measurement, then go quiet.** Issuing commands during a perception measurement
+  starves the camera and produces confident wrong answers.
+
+- **Sample long enough.** A 110-second window and a 215-second window of the *same run* gave
+  opposite conclusions about localization quality.
+
+- **A grep that finds nothing proves the pattern absent, not the event.** A success string that
+  differed by a few words once produced a headline "never relocalized" for a system that was
+  relocalizing fine.
+
+- **Settle ambiguity with a one-directional mechanism**, not with argument. Where two explanations
+  fit, find the test whose outcome only one of them survives.
+
+- **Record raw inputs in bags.** Without `/fmu/out/esc_status`, odometry can only be rescaled after
+  the fact, never recomputed.
+
+- **Rescaling recorded TF equals re-driving with a corrected constant**, exactly, because heading is
+  gyro-derived and independent of `erpm_to_ms`. Same-bag re-mapping is the *rigorous* experiment,
+  not merely the convenient one.
+
+- **RANSAC planes; never percentiles.** p5/p50 gave opposite wrong answers for the floor tilt.
