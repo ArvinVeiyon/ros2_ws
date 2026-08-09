@@ -13,7 +13,7 @@
 
 | Part | Contents |
 |---|---|
-| [A](#part-a--flight-controller-px4) | Flight controller (PX4) — firmware, airframe, calibration, parameters |
+| [A](#part-a--flight-controller-px4) | Flight controller (PX4) — firmware, airframe, calibration, **parameter changelog (A7)** |
 | [B](#part-b--companion-computer) | Companion computer — OS, workspace, build |
 | [C](#part-c--node-inventory) | Node inventory — every service, its job, parameters and topics |
 | [D](#part-d--bring-up-and-verification) | Bring-up and verification |
@@ -112,7 +112,57 @@ RO_YAW_RATE_LIM   85.9        ⚠ deg/s, NOT rad/s
 | `ttyAMA3` | STL-19 lidar (not fitted) | 230400 |
 | `ttyAMA4` | **uXRCE-DDS agent** | 921600 |
 
-## A7. DDS topic bridge
+## A7. Parameter changelog — what was changed, and the test that justified it
+
+**Every deliberate FC parameter change on this vehicle, with its evidence.** Append here when you
+change one; a value without a reason becomes undeletable folklore.
+
+### Rover control (`RO_*`) — airframe-specific, does **not** affect the drone
+
+| Date | Parameter | Was → Now | Test / evidence |
+|---|---|---|---|
+| 08-02 | `RO_MAX_THR_SPEED` | 3.0 → **0.6** | Firmware doc: *"speed at maximum throttle"*, m/s. Drivetrain measured at 0.58–0.60 m/s. It divides the feedforward in **both** the speed and yaw-rate loops, so FF was **5× too small**. |
+| 08-02 | `RO_YAW_RATE_LIM` | 0.5 → 28.6 → **85.9** | 🔴 Unit is **deg/s, not rad/s**. 0.5 meant 0.0087 rad/s — 6× *below* the 3 deg/s measurement deadband `RO_YAW_RATE_TH` — so in Acro every yaw command was zeroed. **Measured: 1820 armed Acro samples, flat 0.0000 output.** Final 85.9 = 1.50 rad/s, matched to the usable band. |
+| 08-02 | `RO_YAW_RATE_CORR` | 1.0 → 3.0 → **1.8** | Firmware doc recommends >1 for skid-steer friction. Final 1.8 set for the ~1.2 rad/s design point, the middle of the usable band. |
+| 08-02 | `RO_YAW_RATE_P` | → **0.08** | Highest gain that does not hunt across the friction deadband. |
+| 08-02 | `RO_YAW_RATE_I` | → **0.0** | 🔴 **The windup source.** One of the two causes of #20 (with the friction deadband). **Never restore 0.1.** |
+| 08-02 | `RO_YAW_P` | → **2.0** | Applied with the final tune. |
+| 08-02 | `RO_SPEED_LIM` | → **0.70** | m/s. |
+
+⚠️ `RO_YAW_RATE_LIM` is **not referenced by `DifferentialRateControl`** at all — only by
+`DifferentialManualMode` and the ackermann modules. It never constrained the AutoNav path where the
+runaway occurred. An older note claiming otherwise assumed rad/s *and* assumed it applied; neither
+was true. Full derivation: `rover_yaw_response.md` §3 and §5.
+
+### Estimator (`EKF2_*`) — 🚁 **shared with the drone**
+
+| Parameter | Value | Status |
+|---|---|---|
+| `EKF2_MAG_TYPE` | 1 | **as-found, not changed by us.** Magnetometer in use — a suspect for the yaw fault (§A3) |
+| `EKF2_GPS_CTRL` | 7 | **as-found.** All GPS aiding bits on; the other yaw-fault suspect |
+| `EKF2_EV_CTRL` | 4 | **as-found.** External vision = velocity only. `9` (pos+yaw) is the target for the VIO route |
+| `EKF2_IMU_CTRL` | 7 | **as-found** |
+
+> ⚠️ **None of the `EKF2_*` values above were changed by us** — they are what the FC reports. Do not
+> read this table as a change history for them.
+>
+> 🚁 **When you do change one, it affects the drone.** `EKF2_*` and sensor calibration are shared;
+> `RO_*` are rover-airframe-only. Any `EKF2_MAG_TYPE=5` or `EKF2_GPS_CTRL=0` test for the yaw fault
+> **must be reverted before flight** — record the change here with its revert state.
+
+### ⚠️ Gaps in this record
+
+- **Pre-2026-08-01 history is unknown.** Parameters changed before the yaw investigation have no
+  recorded justification.
+- **Sensor calibration has no record at all** on this airframe (§A3 is marked 📋 for that reason).
+- Values must be **re-read after every FC reboot** — they have not always survived one.
+
+```bash
+python3 ~/ros2_ws/tools/set_param.py RO_YAW_RATE_P          # read
+python3 ~/ros2_ws/tools/set_param.py RO_YAW_RATE_P 0.08     # write (refuses while armed)
+```
+
+## A8. DDS topic bridge
 
 Topics crossing FC ↔ ROS 2 are declared in
 `~/PX4-Autopilot/src/modules/uxrce_dds_client/dds_topics.yaml`. Adding one requires a **firmware
