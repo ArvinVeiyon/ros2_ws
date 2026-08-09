@@ -32,7 +32,13 @@ rtabmap:
     # house_map_v2.db, 2026-08-08 — the wheel-odometry replay with Grid/RayTracing on.
     # Replaces rtabmap_run3_vis_nav.db (08-02), which was built on the FALSE map: 38
     # loop closures accepted with rejection disabled, 34 of which fail the check.
-    database_path: "/home/roz/house_map_v2.db"
+    # house_map_v4.db, 2026-08-09 — one room, mapped on the camera-gyro heading
+    # (0.00028 deg/s) AND with the odometry scale corrected (erpm_to_ms 0.003900).
+    # Replaces house_map_v2.db, which was built on the FC heading and the
+    # uncorrected 19% odom over-report: adjacent keyframes there disagreed by
+    # 22 cm and localization jittered 21 deg while parked. Operator-verified:
+    # shape, objects and floor all correct, and walls are SINGLE lines.
+    database_path: "/home/roz/house_map_v4.db"
 
     # LOCALIZATION ONLY - do not add new nodes to the map.
     Mem/IncrementalMemory: "false"
