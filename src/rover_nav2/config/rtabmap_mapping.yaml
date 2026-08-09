@@ -57,4 +57,24 @@ rtabmap:
     Grid/RangeMax: "4.0"
     # Same plate mask as Kp/Vis above - this was the one hole in the ROI family.
     # Correctness only: a 0.00 -> 0.35 sweep moves the map by ~0.1%.
+    # Crop the bottom 35% of every depth frame: that is the rover's own top plate.
     Grid/DepthRoiRatios: "0.0 0.0 0.0 0.35"
+    # 🔴 MUST BE 2, NOT THE DEFAULT 4 (found 2026-08-09).
+    # The ROI above leaves 360 * 0.65 = 234 rows. RTAB-Map requires the cropped
+    # dimension to divide EXACTLY by Grid/DepthDecimation, and 234/4 = 58.5 does
+    # not, so it DISCARDED THE ROI ON EVERY FRAME and logged
+    #   util3d.cpp:1251 "Cannot apply ROI ratios ... Ignoring ROI ratios..."
+    # 234/2 = 117 divides cleanly, so the mask actually applies.
+    #
+    # ⚠️ THIS IS NOT COSMETIC. With the mask ignored, the rover's own plate is
+    # written into the map AT EVERY POSITION THE ROVER OCCUPIED - 11.8% of the
+    # exported cloud in house_map_v4, and clearly visible as a trail through the
+    # floor tracing the driven path. In the OCCUPANCY GRID that marks the corridor
+    # the rover drove through as OBSTACLE, so Nav2 would plan against a map in
+    # which the rover has walled itself in. The operator caught this by eye.
+    # The earlier note calling this a "real parameter gap, NEGLIGIBLE EFFECT" was
+    # wrong and is withdrawn.
+    #
+    # ⚠️ If the colour height ever changes from 360, recheck this: the cropped row
+    # count must stay divisible by the decimation factor.
+    Grid/DepthDecimation: "2"
