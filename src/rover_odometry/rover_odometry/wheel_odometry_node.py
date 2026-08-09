@@ -108,7 +108,12 @@ class WheelOdometryNode(Node):
         self.declare_parameter('right_addresses', [10, 12])
         self.declare_parameter('wheel_addresses', [10, 11, 12, 13])
         self.declare_parameter('wheel_signs', [-1.0, 1.0, 1.0, 1.0])
-        self.declare_parameter('erpm_to_ms', 0.004633)
+        # 0.004633 -> 0.003900 on 2026-08-09 (divide by 1.188). The old value was
+        # the slip-free ERPM->wheel-rotation figure from a hand push; odometry needs
+        # ERPM->GROUND distance, and powered runs slip by a measured 18.8% (5 wall-
+        # referenced runs, sd 2.4%). The uncorrected value drew every wall several
+        # times in house_map_v3. See config/rover_odometry.yaml for the full record.
+        self.declare_parameter('erpm_to_ms', 0.003900)
         # MEASURED 2026-07-21: 0.31 m, left hub centre to right hub centre.
         # NOT 0.43 -- that is the WHEELBASE (front hub to rear hub); it sat in this
         # slot until now and under-reported every yaw rate by ~28% (0.31/0.43).

@@ -33,8 +33,32 @@ wheel_odometry_node:
     # The earlier ">=2.3x low" estimate was derived from a skid-steer spin and
     # was only ever a LOWER bound -- scrub makes wheels turn far more than the
     # achieved rotation implies. The real slip factor in that spin was ~5x.
+    #
+    # ⚠️ SUPERSEDED 2026-08-09: 0.004633 -> 0.003900 (divide by 1.188).
+    # The hand-push above measures ERPM -> WHEEL ROTATION, which is slip-free and
+    # therefore correct as a description of the drivetrain. But odometry needs
+    # ERPM -> GROUND DISTANCE, and under power this rover slips. Measured against
+    # a wall (RANSAC line fit on /scan, +/-1 mm), 5 runs, both directions,
+    # 0.146-0.364 m/s:
+    #     ratios 1.212 / 1.224 / 1.153 / 1.155 / 1.196  ->  mean 1.188, sd 0.029
+    # i.e. odometry consistently reported 18.8% MORE ground than the rover
+    # covered, with only 2.4% spread. A round trip made this vivid: the wall said
+    # the rover was back within 9 mm of its start, odometry claimed 0.891 m away.
+    #
+    # 🔑 WHY THIS MATTERS AND WHY THE FIRST ANSWER WAS WRONG: it was initially
+    # argued that 19% is "physical slip, not miscalibration", so the constant
+    # should stand. That is true about the CAUSE and irrelevant to the
+    # CONSEQUENCE -- SLAM consumes ground distance. house_map_v3 was built on the
+    # uncorrected value and drew every wall SEVERAL TIMES: 19% of 22.4 m is 4.3 m
+    # of accumulated error in a 3.2 x 3.9 m room. Re-mapping the SAME bag with the
+    # odom translation rescaled by 1/1.188 collapsed the duplicate walls
+    # (house_map_v4) and shrank the room by 24 cm to its true size.
+    #
+    # Folding the mean slip in leaves ~2.4% residual instead of 19%. The residual
+    # is surface-dependent, so re-measure with tools/wall_probe if the rover is
+    # ever driven on a materially different floor.
     # Tool: tools/odom_scale_measure.py --revs 5
-    erpm_to_ms: 0.004633
+    erpm_to_ms: 0.003900
     # MEASURED 2026-07-21: 0.31 m, left hub centre to right hub centre.
     # Was 0.43 until then -- that figure is the WHEELBASE (front hub to rear hub),
     # not the track, and it under-reported every yaw rate by ~28% (0.31/0.43).
@@ -83,11 +107,20 @@ wheel_odometry_node:
     # ⇒ ~1 deg of heading error over a 263 s mapping run, against tens to
     # hundreds from the FC.
     #
-    # ⚠️ SCALE IS RATE-DEPENDENT: -0.38% at 8.3 deg/s, -1.17% at 21.8 deg/s,
-    # -4.53% at 32.7 deg/s. MAP WITH SLOW, PAUSED TURNS (tap, full stop, pause
-    # 3-4 s). This may be an artefact of the measuring probe rather than the
-    # sensor — that probe integrated on arrival time, whereas the node integrates
-    # header.stamp deltas and refuses to integrate across gaps. Not yet retested.
+    # ✅ SCALE RETESTED FROM A RECORDED BAG 2026-08-09 — IT IS FINE AT ANY RATE.
+    # Three full circles measured against the wall, integrating on recorded
+    # timestamps rather than arrival time:
+    #     9.3 deg/s -> scale 0.9996 (+0.16 deg over 363 deg)
+    #     6.1 deg/s -> scale 0.9953 (+1.74 deg over 371 deg)
+    #    19.5 deg/s -> scale 1.0012 (-0.39 deg over 327 deg)
+    # An earlier live probe reported -1.17% at 21.8 deg/s and -4.53% at 32.7 deg/s
+    # and appeared rate-dependent. That was THE PROBE, not the sensor: it
+    # integrated on message ARRIVAL time, so samples dropped at peak CPU had the
+    # following (lower) rate applied across the whole gap. The node integrates
+    # header.stamp deltas and refuses to integrate across gaps >50 ms, which is
+    # why it does not have this error. Slow paused turns are still good practice
+    # for image sharpness, but they are no longer required for scale.
+    # Camera stamp clock measured at +0.0022% of ROS time = 0.008 deg per circle.
     #
     # ⚠️ This makes odometry depend on rover-camera, which degrades SILENTLY
     # (colour rate decays over ~1.5 h; a restart cures it). Staleness falls back
