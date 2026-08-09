@@ -547,11 +547,17 @@ The tool exports the cloud and the keyframe poses, **removes the rover's own bod
 three views plus a plan view with the map axes and the driven path.
 
 > **Why the rover body is stripped.** The mask that crops the plate out of each depth frame is
-> silently discarded whenever the cropped height does not divide exactly by `Grid/DepthDecimation`
-> (§A7 note, `autonav_reference.md` §9). In `house_map_v4` that was **11.8% of the cloud** — the
-> plate drawn at every position the rover occupied, tracing the driven path through the floor, which
-> is exactly the sort of artefact that makes a good map look broken. `--keep-rover` shows it if you
-> want to inspect the contamination itself.
+> discarded whenever the cropped height does not divide exactly by `Grid/DepthDecimation`
+> (`autonav_reference.md` §9). In `house_map_v4` that was **31,299 of 266,053 points — 11.8% of the
+> cloud**: the plate drawn at *every position the rover occupied*, so the map showed **a trail
+> through the floor tracing exactly where the vehicle drove.** That is what makes a perfectly good
+> map look broken. `--keep-rover` shows the contamination if you want to inspect it.
+>
+> **Recognising it without the tool:**
+> - **Visually** — a band of clutter following the driven path, thickest where the rover lingered.
+> - **In the log** — `util3d.cpp:1251 ... Cannot apply ROI ratios ... Ignoring ROI ratios`, **once
+>   per frame** (740 times in one 488 s replay). If you see that during a mapping run, **the map you
+>   are building contains the rover.**
 
 ### The five questions — put these to the operator
 

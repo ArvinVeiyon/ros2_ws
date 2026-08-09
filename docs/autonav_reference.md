@@ -313,11 +313,30 @@ recorded at 15/15 fps (17.3 MB/s) rather than 30/30 (~34 MB/s).
 | 19% odometry over-report | **every wall drawn several times** — 4.3 m of error in a 3.2 × 3.9 m room | `erpm_to_ms` (§5) |
 | Plate mask silently ignored | 11.8% of the cloud was the rover's own body, traced along the driven path | `Grid/DepthDecimation: 2` |
 
-> ⚠️ **The decimation trap.** `Grid/DepthRoiRatios` crops the bottom 35% of each frame to hide the
-> plate. RTAB-Map requires the cropped height to divide **exactly** by `Grid/DepthDecimation`. At
-> 640×360 the crop leaves 234 rows, and 234/4 = 58.5 — so the mask was **discarded on every frame**
-> with only a log line to show for it. 234/2 = 117 works. **Recheck whenever the colour height
+> ⚠️ **The decimation trap — the rover maps its own body.** `Grid/DepthRoiRatios` crops the bottom
+> 35% of each frame to hide the rover's top plate. RTAB-Map requires the cropped height to divide
+> **exactly** by `Grid/DepthDecimation`. At 640×360 the crop leaves 234 rows, and 234/4 = 58.5 — so
+> the mask was **discarded on every frame**. 234/2 = 117 works. **Recheck whenever the colour height
 > changes.**
+>
+> **Two independent ways to recognise it:**
+>
+> - **Visually — how it was actually caught.** The plate is drawn at *every position the rover
+>   occupied*, so the map shows **a trail through the floor tracing exactly where the vehicle drove**.
+>   The operator spotted this by eye before any log was read. **31,299 of 266,053 points = 11.8% of
+>   the cloud** in `house_map_v4`.
+> - **In the log.** `util3d.cpp:1251::cloudsRGBFromSensorData() Cannot apply ROI ratios [...] cannot
+>   be divided exactly by decimation parameter (4). Ignoring ROI ratios...` — **once per frame**, 740
+>   times in one 488 s replay. Loud, and dismissed as noise for weeks.
+>
+> ⚠️ Earlier notes recorded this as a *"real parameter gap, **negligible effect**"*. **That assessment
+> was wrong and is withdrawn.** `tools/map_review.py` now strips the rover body unconditionally, so a
+> map review survives the bug recurring.
+>
+> ⚠️ **Unproven:** it was further claimed that the plate marks the driven corridor as *obstacle* and
+> would wall Nav2 in. The grid comparison does **not** support that — ray tracing from later poses
+> clears what the plate marked from earlier ones. The **cloud** contamination is measured; the
+> **grid** consequence was inference and is withdrawn pending evidence.
 
 ### Localization settings that matter
 
