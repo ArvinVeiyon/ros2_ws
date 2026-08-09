@@ -24,7 +24,8 @@
 | [10](#10-known-faults) | Known faults |
 | [11](#11-inviolable-rules) | Inviolable rules |
 | [12](#12-test-ladder-and-status) | Test ladder and status |
-| [13](#13-method-notes) | Method notes |
+| [13](#13-fitness-assessment--dated) | **Fitness assessment — dated** |
+| [14](#14-method-notes) | Method notes |
 
 ---
 
@@ -137,7 +138,7 @@ number** — it tells you when the value stops being valid.
 
 | Constant | Value | How it was obtained |
 |---|---|---|
-| `erpm_to_ms` | **0.003900** | Wall-referenced, 5 powered runs both directions, 0.146–0.364 m/s. Odometry over-reported ground distance by **18.8%** (mean 1.188, sd 0.029). **Includes mean slip — re-measure on a different floor.** |
+| `erpm_to_ms` | **0.003900** | Wall-referenced, 5 powered runs both directions, 0.146–0.364 m/s. Odometry over-reported ground distance by **18.8%** (mean 1.188, sd 0.029). **Includes mean slip — re-measure on a different floor.** Residual after correction is the sd of those runs, **~2.4%**, down from the 19% the uncorrected value carried. |
 | ~~`erpm_to_ms` 0.004633~~ | **superseded 2026-08-09** | The slip-free eRPM→*wheel rotation* figure from a hand push over 5 counted revolutions. Correct as a description of the drivetrain, **wrong for odometry**, which needs ground distance. Itself replaced an assumed-geometry value that was 12.2× too small. Full history in `config/rover_odometry.yaml`. |
 | `track_width` | 0.310 m | Tape, hub centre to hub centre |
 | `deadband_erpm` | 5.0 | Standstill noise: 2930 samples per wheel, min 0, max 0 |
@@ -442,7 +443,37 @@ S1 kill ─▶ S2 sensor loss ─▶ T1 speed ─▶ T2 straight goal
 
 ---
 
-## 13. Method notes
+## 13. Fitness assessment — dated
+
+**A verdict is only meaningful with a date on it.** This section records what was fit for use, when,
+and on what evidence. Re-assess rather than assume; supersede rather than edit in place.
+
+### 2026-08-10
+
+| Subsystem | Verdict | Evidence |
+|---|---|---|
+| **Odometry (heading)** | ✅ **fit** | drift **0.00028 °/s** (144 s parked, below the wall's own 0.06° noise) · scale **0.04–0.47%** over three full circles at 6.1, 9.3 and 19.5 °/s · unaffected by driving |
+| **Odometry (distance)** | ✅ **fit** | ~**2.4%** residual after the `erpm_to_ms` correction, from 5 wall-referenced runs (was 19%) |
+| **Map `house_map_v4`** | ✅ **fit** | operator-verified: shape, objects and floor correct, **walls single**. One object (a glossy steel almirah) maps ~1.5× thick and closer than reality — errs toward the rover, so it fails safe |
+| **Localization** | ❌ **NOT MEASURED** | both 2026-08-09 attempts were invalid — one truncated window, one starved camera. Do not quote a figure until it is re-run per §14 |
+| **S1 kill switch** | ✅ **passed** | 2026-07-22, **re-confirmed 2026-08-10**: 155 rpm peak, disarm and wheels-zero in the same 50 Hz sample (**<20 ms**) |
+
+**Standing caveats on the odometry verdict — both permanent, neither a defect:**
+
+- **No absolute heading.** A gyro integrates rate. It fixes map-building drift; it will never tell
+  you which way is north. Anything needing absolute heading needs a different sensor.
+- **Heading is coupled to `rover-camera`**, which is the component that degrades silently under CPU
+  load (§10). Fallback to the FC gyro is automatic and loud, but the FC gyro is unusable — so a
+  camera failure degrades heading to unusable, it does not merely reduce accuracy. The queued
+  `vehicle_angular_velocity` DDS bridge would remove this coupling.
+
+⇒ **What this permits:** dead reckoning over a mapping run (~1° heading, ~2% distance) and the
+first autonomous drive (T2). **What it does not permit:** anything depending on a localization
+number, until localization is actually measured.
+
+---
+
+## 14. Method notes
 
 How to get trustworthy numbers on this machine. **Each of these was learned by getting it wrong
 first.**
