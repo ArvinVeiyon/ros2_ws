@@ -86,6 +86,7 @@ Implementation notes:
 """
 
 import math
+from collections import deque
 
 import rclpy
 from rclpy.node import Node
@@ -190,7 +191,8 @@ class WheelOdometryNode(Node):
         self.cam_prev_stamp = None     # previous header.stamp [s]
         self.cam_wall = None           # arrival time, for staleness
         self.cam_bias = None           # [rad/s]
-        self.cam_bias_buf = []         # (stamp, wz) while the wheels are stopped
+        self.cam_bias_buf = deque()    # (stamp, wz) while the wheels are stopped
+        self.cam_bias_sum = 0.0        # running sum, so the mean stays O(1)
         self.cam_gaps = 0
         self.cam_gap_logged = 0.0
         self.wheels_stopped = True     # set by esc_callback; gates bias updates
@@ -294,13 +296,23 @@ class WheelOdometryNode(Node):
         # Bias: rolling mean over the at-rest window. A dozing-ESC standstill is
         # still a standstill, so wheels_stopped covers it.
         if self.wheels_stopped:
+            # Running sum over a deque: O(1) per sample rather than re-summing a
+            # ~2300-element window 195 times a second.
+            # ⚠️ MEASURED: this is NOT where the CPU goes. Steady-state cost went
+            # 58.8% -> 53.5% with this change; the node was ~25% before the camera
+            # gyro existed. The ~28-point jump is rclpy's per-message overhead at
+            # 195 Hz, not the arithmetic in here (cf. the C++-port note: ~65% of
+            # this node is executor overhead, ~4% is our logic). If this needs to
+            # come down, the levers are a lower IMU publish rate at the source or
+            # the C++ port — not micro-optimising this callback.
             self.cam_bias_buf.append((stamp, wz))
+            self.cam_bias_sum += wz
             cutoff = stamp - self.cam_bias_window
             while self.cam_bias_buf and self.cam_bias_buf[0][0] < cutoff:
-                self.cam_bias_buf.pop(0)
+                self.cam_bias_sum -= self.cam_bias_buf.popleft()[1]
             if len(self.cam_bias_buf) >= self.cam_bias_min:
                 was_none = self.cam_bias is None
-                self.cam_bias = sum(v for _, v in self.cam_bias_buf) / len(self.cam_bias_buf)
+                self.cam_bias = self.cam_bias_sum / len(self.cam_bias_buf)
                 if was_none:
                     self.get_logger().info(
                         f'camera gyro bias established: {math.degrees(self.cam_bias):+.4f} '
