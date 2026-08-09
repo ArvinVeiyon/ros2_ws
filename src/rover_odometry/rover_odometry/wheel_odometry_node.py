@@ -9,7 +9,7 @@ Wheel mapping, ERPM sign map, conversion constant and deadband are all
 bench-verified values — see config/rover_odometry.yaml and
 docs/rover_autonav_requirements.md (M1).
 
-HEADING COMES FROM THE GYRO, NOT THE WHEELS (yaw_source, default 'gyro').
+HEADING COMES FROM A GYRO, NOT THE WHEELS (yaw_source, default 'camera_gyro').
 This vehicle is skid-steer: it has no steering axle and can only rotate by
 forcing all four tyres to scrub sideways across the ground. Slip is therefore
 not a defect to be minimised, it is the turning mechanism — which means
@@ -18,10 +18,32 @@ and it over-reports rotation by an amount that varies with surface, load and
 turn radius. Getting track_width exactly right (0.31, measured 2026-07-21)
 removes a constant scale error but cannot touch the variable slip error.
 
-The FC's EKF-fused attitude senses rotation directly and does not care whether
-a wheel slipped, so wheels are used for distance and the gyro for heading. That
-split is standard practice for skid-steer, and it matters most for SLAM, which
-aligns scans by pose: a wrong heading lands every scan rotated and smears the map.
+A gyro senses rotation directly and does not care whether a wheel slipped, so
+wheels are used for distance and a gyro for heading. That split is standard
+practice for skid-steer, and it matters most for SLAM, which aligns scans by
+pose: a wrong heading lands every scan rotated and smears the map.
+
+⛔ WHY THE DEFAULT IS THE CAMERA, NOT THE FLIGHT CONTROLLER (measured 2026-08-09)
+Both were compared against an absolute reference: park square to a flat wall and
+RANSAC-fit a line to /scan, which gives perpendicular distance to +/-1 mm and wall
+bearing to +/-0.26 deg. With the rover VERIFIED STATIONARY by that wall:
+
+    window              wall (truth)   FC yaw      camera gyro
+    parked, cold 476 s    -0.07 deg    -2.46 deg     -
+    after driving 111 s   +0.01 deg   -18.88 deg     -
+    after turning  21 s   -0.18 deg   +23.23 deg     -
+    after turning  41 s   -0.07 deg    -7.17 deg    -0.02 deg
+
+The FC invented +27.1 deg of rotation across one 4-minute session while the rover
+never moved. It is ERRATIC rather than biased — the sign flips — and it is NOT
+proportional to motor effort (0.341 m/s gave +0.54 deg of phantom yaw where
+0.364 m/s gave -8.28 deg), so it cannot be calibrated or compensated. Root cause
+unknown; EKF2_MAG_TYPE=1 so the magnetometer is in use, but the disable test was
+never run and the fault is too intermittent for a single run to prove anything.
+
+The 336L gyro over the same transition: bias +0.72 deg/s but stable to
+0.0015 deg/s, and driving does not disturb it. Over a 263 s mapping run that is
+~1 deg of heading error against tens to hundreds from the FC.
 
 Implementation notes:
   * We integrate yaw *deltas* rather than adopting PX4's absolute yaw, so /odom
@@ -34,8 +56,25 @@ Implementation notes:
   * /fmu/out/vehicle_angular_velocity is NOT in this FC's dds_topics.yaml, so
     vehicle_attitude (~92 Hz, measured yaw noise 0.049 deg over 8 s at rest) is
     the gyro-derived source available to us.
-  * If attitude goes stale we fall back to wheel-derived yaw automatically
-    rather than freezing heading, and say so in the log.
+  * The camera gyro is a RATE sensor with a large bias, so it is integrated here
+    rather than differenced like the FC's absolute attitude. Bias is re-estimated
+    continuously while the wheels read zero, because it creeps thermally
+    (+0.0083 deg/s over 3 minutes measured) — calibrating once and trusting it
+    forever would reintroduce exactly the drift we are escaping.
+  * Integration uses header.stamp deltas, NOT arrival time. A probe that used
+    arrival time under-read rotation by an amount that grew with turn rate
+    (-0.38% at 8.3 deg/s, -4.53% at 32.7 deg/s), which is the signature of
+    samples being dropped at peak CPU and the next sample's lower rate being
+    applied across the whole gap. Gaps are counted and reported instead.
+  * The camera clock is its own domain (stamps are device uptime, not wall
+    clock), so we also track stamp-elapsed vs wall-elapsed and warn if they
+    diverge — a device clock running at the wrong rate would silently scale
+    every integrated angle.
+  * ⚠️ This couples odometry to rover-camera, which is a component that DEGRADES
+    SILENTLY (colour rate decays over ~1.5 h; see memory [SERVICES]). Staleness
+    falls back to the FC gyro and then to wheels, loudly.
+  * If the selected source goes stale we fall back automatically rather than
+    freezing heading, and say so in the log.
   * These VESCs doze at rest: after a few seconds without motion only address 13
     keeps reporting (esc_online_flags 8), so one side has no data and a naive
     reader concludes the wheels are unreadable. They are not — a dozing ESC
@@ -53,9 +92,10 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 
 from px4_msgs.msg import EscStatus, VehicleAttitude
+from sensor_msgs.msg import Imu
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import TransformStamped
-from tf2_ros import TransformBroadcaster
+from tf2_ros import TransformBroadcaster, Buffer, TransformListener
 
 
 class WheelOdometryNode(Node):
@@ -80,8 +120,23 @@ class WheelOdometryNode(Node):
         # 'gyro' = heading from FC attitude (slip-immune, strongly preferred on a
         # skid-steer). 'wheels' = legacy (v_right-v_left)/track, kept for A/B
         # comparison and as a diagnostic if the FC link is down.
-        self.declare_parameter('yaw_source', 'gyro')
+        self.declare_parameter('yaw_source', 'camera_gyro')
         self.declare_parameter('attitude_timeout', 0.5)
+        # --- camera-gyro heading (the default source; see the module docstring) ---
+        self.declare_parameter('camera_gyro_topic', '/camera/gyro/sample')
+        self.declare_parameter('camera_gyro_frame', 'camera_gyro_optical_frame')
+        # Staleness. At 195 Hz, 0.3 s is ~58 missed samples: unambiguously broken,
+        # while still tolerating an ordinary scheduling hiccup.
+        self.declare_parameter('camera_gyro_timeout', 0.3)
+        # A gap larger than this between consecutive stamps is counted and logged.
+        # Nominal spacing is 5.1 ms; 50 ms is ~10 missed samples.
+        self.declare_parameter('camera_gyro_max_gap', 0.05)
+        # Rolling window of at-rest samples used for the bias estimate. 12 s at
+        # 195 Hz is ~2300 samples, which matched the offline characterisation.
+        self.declare_parameter('camera_bias_window', 12.0)
+        # Refuse to integrate until the bias is backed by at least this many
+        # at-rest samples — an unbiased start would inject 0.72 deg/s of error.
+        self.declare_parameter('camera_bias_min_samples', 400)
         # Keep publishing a zero-velocity /odom when dozing ESCs leave a side
         # unreported but every awake wheel reads zero. Set false to restore the
         # old behaviour (skip the update, /odom goes silent) for A/B testing.
@@ -102,7 +157,7 @@ class WheelOdometryNode(Node):
         self.yaw_source = str(self.get_parameter('yaw_source').value).lower()
         self.attitude_timeout = self.get_parameter('attitude_timeout').value
         self.publish_at_rest = self.get_parameter('publish_at_rest').value
-        if self.yaw_source not in ('gyro', 'wheels'):
+        if self.yaw_source not in ('camera_gyro', 'gyro', 'wheels'):
             self.get_logger().warning(
                 f"unknown yaw_source '{self.yaw_source}' — falling back to 'wheels'")
             self.yaw_source = 'wheels'
@@ -120,6 +175,32 @@ class WheelOdometryNode(Node):
         self.prev_att_yaw = None       # yaw at the previous odometry step
         self.gyro_active = None        # None until first decision, then bool
         self.at_rest_active = False    # publishing inferred zero velocity?
+        self.heading_src = None        # last announced source, for log-on-change
+
+        # camera-gyro state
+        self.cam_topic = str(self.get_parameter('camera_gyro_topic').value)
+        self.cam_frame = str(self.get_parameter('camera_gyro_frame').value)
+        self.cam_timeout = float(self.get_parameter('camera_gyro_timeout').value)
+        self.cam_max_gap = float(self.get_parameter('camera_gyro_max_gap').value)
+        self.cam_bias_window = float(self.get_parameter('camera_bias_window').value)
+        self.cam_bias_min = int(self.get_parameter('camera_bias_min_samples').value)
+        self.cam_row = None            # 3rd row of base_link <- camera rotation
+        self.cam_yaw = 0.0             # integrated, unwrapped, bias-removed [rad]
+        self.prev_cam_yaw = None       # value at the previous odometry step
+        self.cam_prev_stamp = None     # previous header.stamp [s]
+        self.cam_wall = None           # arrival time, for staleness
+        self.cam_bias = None           # [rad/s]
+        self.cam_bias_buf = []         # (stamp, wz) while the wheels are stopped
+        self.cam_gaps = 0
+        self.cam_gap_logged = 0.0
+        self.wheels_stopped = True     # set by esc_callback; gates bias updates
+        # clock-rate sanity: camera stamps are device uptime, not wall clock
+        self.cam_span_stamp = 0.0
+        self.cam_span_wall = 0.0
+        self.cam_clock_warned = False
+
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -131,6 +212,16 @@ class WheelOdometryNode(Node):
             EscStatus, '/fmu/out/esc_status', self.esc_callback, qos)
         self.att_sub = self.create_subscription(
             VehicleAttitude, '/fmu/out/vehicle_attitude', self.attitude_callback, qos)
+        # The Orbbec wrapper publishes IMU on sensor QoS (best-effort). Depth 50
+        # covers a scheduling hiccup at 195 Hz without hoarding stale samples.
+        cam_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=50,
+        )
+        self.cam_sub = self.create_subscription(
+            Imu, self.cam_topic, self.camera_gyro_callback, cam_qos)
         self.odom_pub = self.create_publisher(Odometry, '/odom', 10)
         self.tf_broadcaster = TransformBroadcaster(self) if self.publish_tf else None
 
@@ -163,6 +254,97 @@ class WheelOdometryNode(Node):
             return False
         age = self.get_clock().now().nanoseconds / 1e9 - self.att_wall
         return age <= self.attitude_timeout
+
+    def _camera_row(self):
+        """Third row of the base_link <- camera_gyro rotation, cached.
+
+        Only the row is needed: yaw rate about base_link +z is its dot product
+        with the camera-frame angular velocity. Taken from TF rather than
+        hand-derived, so a remount cannot silently invert the sign.
+        """
+        if self.cam_row is not None:
+            return self.cam_row
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                self.child_frame_id, self.cam_frame, rclpy.time.Time())
+        except Exception:
+            return None
+        q = tf.transform.rotation
+        x, y, z, w = q.x, q.y, q.z, q.w
+        self.cam_row = (2.0 * (x * z - y * w),
+                        2.0 * (y * z + x * w),
+                        1.0 - 2.0 * (x * x + y * y))
+        self.get_logger().info(
+            f'camera gyro TF locked: {self.child_frame_id} <- {self.cam_frame} '
+            f'row_z=({self.cam_row[0]:+.4f}, {self.cam_row[1]:+.4f}, {self.cam_row[2]:+.4f})')
+        return self.cam_row
+
+    def camera_gyro_callback(self, msg: Imu):
+        row = self._camera_row()
+        if row is None:
+            return
+        wz = (row[0] * msg.angular_velocity.x
+              + row[1] * msg.angular_velocity.y
+              + row[2] * msg.angular_velocity.z)
+
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        wall = self.get_clock().now().nanoseconds / 1e9
+        self.cam_wall = wall
+
+        # Bias: rolling mean over the at-rest window. A dozing-ESC standstill is
+        # still a standstill, so wheels_stopped covers it.
+        if self.wheels_stopped:
+            self.cam_bias_buf.append((stamp, wz))
+            cutoff = stamp - self.cam_bias_window
+            while self.cam_bias_buf and self.cam_bias_buf[0][0] < cutoff:
+                self.cam_bias_buf.pop(0)
+            if len(self.cam_bias_buf) >= self.cam_bias_min:
+                was_none = self.cam_bias is None
+                self.cam_bias = sum(v for _, v in self.cam_bias_buf) / len(self.cam_bias_buf)
+                if was_none:
+                    self.get_logger().info(
+                        f'camera gyro bias established: {math.degrees(self.cam_bias):+.4f} '
+                        f'deg/s from {len(self.cam_bias_buf)} at-rest samples')
+
+        prev = self.cam_prev_stamp
+        self.cam_prev_stamp = stamp
+        if prev is None or self.cam_bias is None:
+            return
+        dt = stamp - prev
+        if dt <= 0.0:
+            return
+        if dt > self.cam_max_gap:
+            # Do NOT integrate across the gap: the rate we hold is the one AFTER
+            # it, and applying that across the whole interval is what makes a
+            # dropped burst read as lost rotation.
+            self.cam_gaps += 1
+            if wall - self.cam_gap_logged > 10.0:
+                self.get_logger().warning(
+                    f'camera gyro gap {dt*1000:.0f} ms (>{self.cam_max_gap*1000:.0f} ms); '
+                    f'{self.cam_gaps} so far — rotation across gaps is NOT integrated')
+                self.cam_gap_logged = wall
+            return
+        self.cam_yaw += (wz - self.cam_bias) * dt
+
+        # Device clock vs wall clock. A camera clock running at the wrong rate
+        # would scale every integrated angle without any other symptom.
+        self.cam_span_stamp += dt
+        self.cam_span_wall += min(max(wall - getattr(self, '_cam_prev_wall', wall), 0.0), 1.0)
+        self._cam_prev_wall = wall
+        if (not self.cam_clock_warned and self.cam_span_wall > 60.0
+                and self.cam_span_stamp > 0.0):
+            ratio = self.cam_span_stamp / self.cam_span_wall
+            if abs(ratio - 1.0) > 0.01:
+                self.cam_clock_warned = True
+                self.get_logger().warning(
+                    f'camera stamp clock runs at {ratio:.4f}x wall clock — every '
+                    'integrated angle is scaled by this factor')
+
+    def _camera_fresh(self):
+        if self.cam_wall is None or self.cam_bias is None or self.cam_row is None:
+            return False
+        age = self.get_clock().now().nanoseconds / 1e9 - self.cam_wall
+        return age <= self.cam_timeout
 
     def esc_callback(self, msg: EscStatus):
         reports = list(msg.esc[:msg.esc_count])
@@ -236,27 +418,52 @@ class WheelOdometryNode(Node):
         v_lin = (v_left + v_right) / 2.0
         v_ang_wheels = (v_right - v_left) / self.track
 
-        use_gyro = self.yaw_source == 'gyro' and self._attitude_fresh()
-        if use_gyro != self.gyro_active:
-            if use_gyro:
-                self.get_logger().info('heading source: GYRO (FC attitude)')
+        # Tell the camera-gyro callback whether it may fold samples into the bias
+        # estimate. at_rest (dozing ESCs, every awake wheel zero) is a genuine
+        # standstill, so it counts.
+        self.wheels_stopped = at_rest or (v_left == 0.0 and v_right == 0.0)
+
+        # Source selection, in preference order. Each falls through to the next
+        # when its sensor is stale, so heading degrades rather than freezing.
+        source = 'wheels'
+        if self.yaw_source == 'camera_gyro' and self._camera_fresh():
+            source = 'camera_gyro'
+        elif self.yaw_source in ('camera_gyro', 'gyro') and self._attitude_fresh():
+            source = 'gyro'
+        if source != self.heading_src:
+            if source == 'camera_gyro':
+                self.get_logger().info('heading source: CAMERA GYRO (336L, bias-corrected)')
+            elif source == 'gyro':
+                if self.yaw_source == 'camera_gyro':
+                    self.get_logger().warning(
+                        'camera gyro unavailable — falling back to FC attitude, which '
+                        'was measured inventing up to 23 deg in 21 s while stationary')
+                else:
+                    self.get_logger().info('heading source: GYRO (FC attitude)')
             elif self.yaw_source == 'wheels':
                 self.get_logger().info('heading source: WHEELS (configured)')
-            elif self.gyro_active is None:
-                # First decision at startup: attitude simply has not arrived yet.
-                # Not a fault, so don't raise a warning for it.
-                self.get_logger().info('waiting for FC attitude; wheel yaw meanwhile')
+            elif self.heading_src is None:
+                # First decision at startup: the sensor simply has not arrived
+                # yet. Not a fault, so don't raise a warning for it.
+                self.get_logger().info('waiting for a gyro; wheel yaw meanwhile')
             else:
                 self.get_logger().warning(
-                    'FC attitude stale — falling back to wheel-derived yaw '
-                    '(slip-prone on skid-steer)')
-            self.gyro_active = use_gyro
+                    'all gyro sources stale — falling back to wheel-derived yaw '
+                    '(a skid-steer turns by scrubbing, so the wheels cannot '
+                    'observe rotation at all)')
+            self.heading_src = source
+        self.gyro_active = source in ('camera_gyro', 'gyro')
 
         v_ang = v_ang_wheels
         if self.prev_stamp_us is not None:
             dt = (msg.timestamp - self.prev_stamp_us) / 1e6
             if 0.0 < dt < 0.5:
-                if use_gyro and self.prev_att_yaw is not None:
+                if source == 'camera_gyro' and self.prev_cam_yaw is not None:
+                    # Already in ROS convention (rotated into base_link via TF)
+                    # and already unwrapped, so difference it directly.
+                    d_theta = self.cam_yaw - self.prev_cam_yaw
+                    v_ang = d_theta / dt
+                elif source == 'gyro' and self.prev_att_yaw is not None:
                     # NED -> ENU: PX4 yaw is positive clockwise seen from above,
                     # ROS is positive counter-clockwise, hence the negation.
                     d_theta = -self._wrap(self.att_yaw - self.prev_att_yaw)
@@ -268,10 +475,11 @@ class WheelOdometryNode(Node):
                 self.y += v_lin * math.sin(theta_mid) * dt
                 self.theta = self._wrap(self.theta + d_theta)
         self.prev_stamp_us = msg.timestamp
-        # Always advance the yaw baseline, even on a skipped step, so a dropped
+        # Always advance the yaw baselines, even on a skipped step, so a dropped
         # or out-of-range dt never turns into a false accumulated rotation.
         if self.att_yaw is not None:
             self.prev_att_yaw = self.att_yaw
+        self.prev_cam_yaw = self.cam_yaw
 
         stamp = self.get_clock().now().to_msg()
         qz = math.sin(self.theta / 2.0)
@@ -288,16 +496,21 @@ class WheelOdometryNode(Node):
         odom.twist.twist.linear.x = v_lin
         odom.twist.twist.angular.z = v_ang
         # x, y from wheel integration; z/roll/pitch unobserved. Yaw confidence
-        # depends on its source: the gyro is far better than slipping wheels, so
+        # depends on its source, and the three differ by orders of magnitude, so
         # advertise that honestly — Nav2/SLAM weight poses by these numbers.
+        #   camera gyro : drift 0.0015-0.0028 deg/s, unaffected by driving
+        #   FC attitude : erratic, measured up to 1.106 deg/s while stationary
+        #   wheels      : cannot observe rotation on a skid-steer at all
+        yaw_var = {'camera_gyro': 0.002, 'gyro': 0.02, 'wheels': 0.2}[source]
+        twist_var = {'camera_gyro': 0.001, 'gyro': 0.01, 'wheels': 0.1}[source]
         odom.pose.covariance[0] = 0.01
         odom.pose.covariance[7] = 0.01
         odom.pose.covariance[14] = 1e6
         odom.pose.covariance[21] = 1e6
         odom.pose.covariance[28] = 1e6
-        odom.pose.covariance[35] = 0.002 if use_gyro else 0.02
+        odom.pose.covariance[35] = yaw_var
         odom.twist.covariance[0] = 0.005
-        odom.twist.covariance[35] = 0.001 if use_gyro else 0.01
+        odom.twist.covariance[35] = twist_var
         self.odom_pub.publish(odom)
 
         if self.tf_broadcaster is not None:

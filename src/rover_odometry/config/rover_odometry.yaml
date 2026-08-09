@@ -1,3 +1,9 @@
+# ⚠️⚠️ THIS FILE IS NOT LOADED AT RUNTIME (noted 2026-08-09).
+# rover-camera.service runs `ros2 run rover_odometry wheel_odometry_node` with NO
+# --params-file, so the values that actually take effect are the declare_parameter
+# DEFAULTS in wheel_odometry_node.py. Editing this file alone changes NOTHING.
+# Keep the two in sync, and change the node's defaults when you want a new value
+# to take effect — or add --params-file to the unit.
 wheel_odometry_node:
   ros__parameters:
     # Wheel/ESC mapping — verified 2026-07-19 (hand-spin test, all wheels forward)
@@ -49,14 +55,51 @@ wheel_odometry_node:
     # Staleness: per-ESC sample older than this is treated as missing
     esc_timeout: 0.30            # s
 
-    # Heading source. 'gyro' takes yaw from the FC's EKF-fused attitude
-    # (/fmu/out/vehicle_attitude, ~92 Hz); 'wheels' uses the legacy
-    # (v_right - v_left)/track. Gyro is strongly preferred: this is a skid-steer,
-    # so it can ONLY turn by making all four tyres scrub sideways, and the wheels
-    # therefore cannot observe true rotation at all. Falls back to wheels
-    # automatically if attitude goes stale.
-    yaw_source: gyro
-    attitude_timeout: 0.5        # s, older than this = stale, fall back to wheels
+    # Heading source: 'camera_gyro' | 'gyro' | 'wheels'.
+    #
+    # ⛔ 'wheels' CANNOT WORK and is a diagnostic only. This is a skid-steer: it
+    # turns ONLY by making all four tyres scrub sideways, so (v_right-v_left)/track
+    # is measuring a quantity the wheels cannot observe.
+    #
+    # ⛔ 'gyro' (FC EKF attitude) WAS the default until 2026-08-09 and is now a
+    # FALLBACK ONLY. Measured against a wall (RANSAC line fit on /scan, ±1 mm /
+    # ±0.26 deg) with the rover VERIFIED STATIONARY, the FC invented:
+    #     -18.88 deg over 111 s after a drive      (-0.170 deg/s)
+    #     +23.23 deg over  21 s after a turn       (+1.106 deg/s)
+    #     +27.1  deg total across one 4-min session
+    # It is ERRATIC, not biased — the sign flips — and it is NOT proportional to
+    # motor effort (0.341 m/s gave +0.54 deg phantom yaw where 0.364 m/s gave
+    # -8.28 deg), so no gain or offset can compensate it. Root cause unknown.
+    # EKF2_MAG_TYPE=1 (magnetometer in use) is the leading suspect but the
+    # disable test was never run, and the fault is too intermittent for one run
+    # to prove anything either way.
+    #
+    # ✅ 'camera_gyro' integrates the Gemini 336L gyro (/camera/gyro/sample,
+    # 195 Hz), rotated into base_link via TF. Measured the same day:
+    #     bias                     +0.72 deg/s  (large, but REMOVABLE)
+    #     bias stability, cold      0.0028 deg/s
+    #     bias stability, hot       0.0015 deg/s  <- driving does NOT disturb it
+    #     scale error               -0.38% at 8.3 deg/s (2 full circles vs wall)
+    # ⇒ ~1 deg of heading error over a 263 s mapping run, against tens to
+    # hundreds from the FC.
+    #
+    # ⚠️ SCALE IS RATE-DEPENDENT: -0.38% at 8.3 deg/s, -1.17% at 21.8 deg/s,
+    # -4.53% at 32.7 deg/s. MAP WITH SLOW, PAUSED TURNS (tap, full stop, pause
+    # 3-4 s). This may be an artefact of the measuring probe rather than the
+    # sensor — that probe integrated on arrival time, whereas the node integrates
+    # header.stamp deltas and refuses to integrate across gaps. Not yet retested.
+    #
+    # ⚠️ This makes odometry depend on rover-camera, which degrades SILENTLY
+    # (colour rate decays over ~1.5 h; a restart cures it). Staleness falls back
+    # to 'gyro' then 'wheels', with a loud log line each time.
+    yaw_source: camera_gyro
+    attitude_timeout: 0.5        # s, older than this = stale, fall back
+    camera_gyro_topic: /camera/gyro/sample
+    camera_gyro_frame: camera_gyro_optical_frame
+    camera_gyro_timeout: 0.3     # s; at 195 Hz that is ~58 missed samples
+    camera_gyro_max_gap: 0.05    # s; larger stamp gaps are counted, NOT integrated
+    camera_bias_window: 12.0     # s of at-rest samples in the rolling bias mean
+    camera_bias_min_samples: 400 # refuse to integrate on a thinner estimate
 
     # These VESCs doze at rest (only addr 13 stays online, flags=8), which used to
     # silence /odom entirely whenever the rover stopped -- an L5 blocker, since
