@@ -67,13 +67,25 @@ rtabmap:
     # 234/2 = 117 divides cleanly, so the mask actually applies.
     #
     # ⚠️ THIS IS NOT COSMETIC. With the mask ignored, the rover's own plate is
-    # written into the map AT EVERY POSITION THE ROVER OCCUPIED - 11.8% of the
-    # exported cloud in house_map_v4, and clearly visible as a trail through the
-    # floor tracing the driven path. In the OCCUPANCY GRID that marks the corridor
-    # the rover drove through as OBSTACLE, so Nav2 would plan against a map in
-    # which the rover has walled itself in. The operator caught this by eye.
-    # The earlier note calling this a "real parameter gap, NEGLIGIBLE EFFECT" was
-    # wrong and is withdrawn.
+    # written into the map AT EVERY POSITION THE ROVER OCCUPIED - 31,299 of
+    # 266,053 points, 11.8% of the exported cloud in house_map_v4, and clearly
+    # visible as a trail through the floor tracing the driven path. The operator
+    # caught it by eye before any log was read. The earlier note calling this a
+    # "real parameter gap, NEGLIGIBLE EFFECT" was wrong and is withdrawn.
+    #
+    # ⚠️ WITHDRAWN, DO NOT REINSTATE: an earlier version of this comment claimed
+    # the plate marks the driven corridor as OBSTACLE in the occupancy grid, so
+    # Nav2 would plan against a map in which the rover had walled itself in.
+    # The grid comparison does NOT support that - v4's interior is already
+    # largely free space, because ray tracing from later poses clears what the
+    # plate marked from earlier ones. The CLOUD contamination is measured; the
+    # GRID consequence was inference and is unproven.
+    #
+    # ⚠️ Reprocessing an existing map with decimation 2 (house_map_v5) removed
+    # the ROI errors but introduced ray-tracing SPIKES projecting past the walls,
+    # because 4x as many depth points feed ray tracing and noisy long-range
+    # returns become spurious rays. NOT ADOPTED - evaluate before using it on a
+    # map that Nav2 will plan against.
     #
     # ⚠️ If the colour height ever changes from 360, recheck this: the cropped row
     # count must stay divisible by the decimation factor.
