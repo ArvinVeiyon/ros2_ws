@@ -198,11 +198,37 @@ sudo apt install ros-jazzy-desktop ros-jazzy-rtabmap-ros ros-jazzy-nav2-bringup 
 
 | Component | Version | Notes |
 |---|---|---|
-| Orbbec SDK | 2.9.3 | ⚠️ the clone is **gitignored** — a re-clone restores the unaligned-depth bug; patch is `codex-work/orbbec_unaligned_depth_guard_20260808.patch` |
 | RTAB-Map | 0.22 | |
 | MicroXRCEAgent | v3.0.0-2 | |
 | mavlink-router | c20337b | |
 | px4-ros2-interface-lib | release/1.17 | |
+
+### Third-party sources under `src/` that are **gitignored**
+
+Vendoring these would add hundreds of megabytes and bury our own history, so they are cloned rather
+than committed. **Recorded here so a workspace can be reproduced exactly** — promote to real git
+submodules when convenient.
+
+| Package | Path | Source | Pin |
+|---|---|---|---|
+| `OrbbecSDK_ROS2` | `src/OrbbecSDK_ROS2/` | `github.com/orbbec/OrbbecSDK_ROS2.git` | commit `ec6bc228b79656449bea289f2967a2f44ce52c57`, SDK 2.9.3, ~201 MB |
+| `ldlidar_stl_ros2` | `src/ldlidar_stl_ros2/` | nested git repo, untracked | **pending re-integration** — on return the lidar owns `/scan` and `depth_to_scan` remaps to `/scan_depth` |
+
+> 🔴 **LOCAL PATCH — NOT UPSTREAM. RE-APPLY AFTER ANY RE-CLONE.**
+> `~/codex-work/orbbec_unaligned_depth_guard_20260808.patch` (todo #26). **Because the clone is
+> gitignored, a fresh checkout silently loses this and the RTAB-Map abort returns.**
+>
+> The launch default is `align_mode:=SW`, so depth is aligned to colour in software. When a frameset
+> arrives without a usable colour frame the wrapper skips alignment — then publishes the still-native
+> **1280×800** depth frame on `/camera/depth/image_raw` anyway, where everything downstream assumes
+> the aligned 640×360. RTAB-Map asserts depth ≤ colour in `Memory.cpp::createSignature()` and
+> **aborts the process**, killing localization outright. Upstream guards `logFrameInfoOnce()` against
+> exactly this case — but only the *logging*, not the *publishing*.
+>
+> The patch adds `isDepthAlignedToTarget()` and drops both the depth image and the point cloud for
+> such a frameset, with a throttled WARN so the drop is never silent. `/camera/depth/image_unaligned`
+> still carries the native frame, which is what that topic is for. No effect when `depth_registration`
+> is off. **Measured: 1 h 23 m with 0 aborts, against ~13 min before.**
 
 ## B3. Build
 
@@ -426,7 +452,43 @@ ros2 topic hz /fmu/out/esc_status
 2. Camera verified (D2)
 3. FC parameters re-read (A4) — they do not survive every reboot
 4. `ps -eo pid,pcpu --sort=-pcpu` → nothing unexpected eating a core
-5. 🔴 **S1 kill-switch test in AutoNav — still never performed**
+5. 🔴 **S1 kill-switch test in AutoNav — see the conflict in D6 before relying on it**
+
+## D6. Arming into AutoNav
+
+**AutoNav is a custom `px4_ros2` external mode (nav_state 23) and CANNOT be armed directly via RC.**
+Flipping the RC arm switch (ch5) arms into whatever the RC *mode* switch (ch6) asserts — which is
+**Manual (nav_state 0)** — because an external mode has no RC switch slot. Arming "into AutoNav" from
+RC therefore always lands in Manual, and a correctly-written test refuses to drive.
+
+**Working path — arm in Manual, then software-switch:**
+
+1. Operator arms via RC (ch5) with **throttle neutral** → armed in **Manual**.
+2. Companion sends `DO_SET_MODE main=4 sub=11` → **AutoNav**. It takes and holds; the RC mode switch
+   does not yank it back (verified with a 2 s hold check).
+3. `onActivate` holds zero output until `/cmd_vel` arrives.
+
+`tools/l2_test.py` implements this. It tolerates an already-armed-in-Manual start (wheels must be
+stopped), skips the RC-arm wait, sends AutoNav and verifies it holds before moving. It **never
+software-arms — the operator is always the arming authority.** The operator cannot see the script's
+live stdout, so "arm on cue" is unreliable; **arm first** is the intended flow.
+
+### Safety interlocks
+
+- ⛔ **Never arm AutoNav on stands with the EKF bridge running.** Wheels-up + bridge + closed loop is
+  a self-sustaining front/back limit cycle that only a disarm stops. Validate the brake **passively**
+  on stands (diagnostic + `/scan`); arm only on the **floor**, where odometry is real.
+- The RC **kill (ch8)** is the final authority.
+
+> 🔴🔴 **UNRESOLVED CONTRADICTION — DO NOT ASSUME EITHER WAY.**
+> `rover_autonav_collision_stop.md` (2026-07-23) states the ch8 kill is *"proven to work armed inside
+> AutoNav"*. The project memory, `autonomy_plan.md` and `autonav_reference.md` §12 all record **S1 as
+> UNTESTED**, gating every armed autonomous drive.
+>
+> These cannot both be true, and it is the most safety-critical claim in the project. **Resolve it by
+> running the test, not by choosing a document** — arm on the floor, creep at 0.15 m/s in AutoNav,
+> hit ch8, confirm the wheels stop and it disarms. Then correct whichever record is wrong, here and
+> in §12.
 
 ---
 
