@@ -138,6 +138,7 @@ number** — it tells you when the value stops being valid.
 | Constant | Value | How it was obtained |
 |---|---|---|
 | `erpm_to_ms` | **0.003900** | Wall-referenced, 5 powered runs both directions, 0.146–0.364 m/s. Odometry over-reported ground distance by **18.8%** (mean 1.188, sd 0.029). **Includes mean slip — re-measure on a different floor.** |
+| ~~`erpm_to_ms` 0.004633~~ | **superseded 2026-08-09** | The slip-free eRPM→*wheel rotation* figure from a hand push over 5 counted revolutions. Correct as a description of the drivetrain, **wrong for odometry**, which needs ground distance. Itself replaced an assumed-geometry value that was 12.2× too small. Full history in `config/rover_odometry.yaml`. |
 | `track_width` | 0.310 m | Tape, hub centre to hub centre |
 | `deadband_erpm` | 5.0 | Standstill noise: 2930 samples per wheel, min 0, max 0 |
 | Camera gyro bias | +0.72 °/s | Large but stable; re-estimated live at rest because it creeps thermally (+0.008 °/s over 3 min) |
@@ -174,6 +175,25 @@ turning mechanism — which means `(v_right − v_left) / track` measures a quan
 | `camera_gyro` — Gemini 336L, 195 Hz | **0.0015 – 0.0028 °/s** | ✅ **default**, unaffected by driving |
 | `gyro` — PX4 EKF attitude | 0.005 – **1.106** °/s | 🔴 fallback only — erratic, sign flips |
 | `wheels` | n/a | ⛔ cannot work — diagnostic only |
+
+### Measured drift — every figure, wall-referenced, rover confirmed stationary
+
+| Condition | Wall says (truth) | Source says | Rate |
+|---|---|---|---|
+| FC, parked cold, 476 s | −0.07° | −2.46° | **0.005 °/s** |
+| FC, at rest after a drive, 96 s | 0° | −18.6° | **0.19 °/s** |
+| FC, 111 s after a 0.364 m/s drive | +0.01° | −18.88° | **0.170 °/s** |
+| FC, 21 s after a turn | −0.18° | **+23.23°** | **1.106 °/s** ← worst |
+| FC, 41 s after a turn | −0.07° | −7.17° | 0.175 °/s |
+| FC, one 4-minute session, total | ~0° | **+27.1°** | — |
+| **Camera gyro, cold, 9×20 s windows** | — | — | sd **0.0028 °/s** |
+| **Camera gyro, straight after driving** | — | — | sd **0.0015 °/s** |
+| **✅ `/odom` yaw AFTER THE FIX, 144 s, 538 samples** | +0.060° (= the wall's own noise) | **+0.040°** | **✅ 0.00028 °/s** |
+
+**That last row is the acceptance result.** `/odom` yaw now tracks the wall to within 0.02° over
+two and a half minutes — the drift is *below the reference's own measurement noise*, and roughly
+**3950× better** than the FC's worst case. Over a 263 s mapping run that is 0.07° of heading error
+instead of tens of degrees.
 
 The flight-controller heading was measured, against a wall, inventing **+23.23° in 21 seconds** on a
 rover confirmed stationary, and **+27.1° across one 4-minute session**. It is erratic rather than
