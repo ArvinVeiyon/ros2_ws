@@ -532,6 +532,50 @@ ros2 bag play <bag> --clock --rate 0.3
 > — the whole graph lost. Find it with `pgrep -f /opt/ros/jazzy/lib/rtabmap_slam/rtabmap`, allow
 > ~90 s to drain first, and confirm `Saving database ... done!` in the log.
 
+## E2b. Verifying a map — MANUAL, BY THE OPERATOR
+
+**Do this before localizing in a new map.** A map can be internally consistent, score well on every
+statistic, and still be a picture of nowhere. The only person who can say whether it is the actual
+room is the person who drove it.
+
+```bash
+python3 ~/ros2_ws/tools/map_review.py ~/house_map_vN.db
+# writes <name>_review.png, <name>_plan.png and the exported cloud beside the database
+```
+
+The tool exports the cloud and the keyframe poses, **removes the rover's own body**, and renders
+three views plus a plan view with the map axes and the driven path.
+
+> **Why the rover body is stripped.** The mask that crops the plate out of each depth frame is
+> silently discarded whenever the cropped height does not divide exactly by `Grid/DepthDecimation`
+> (§A7 note, `autonav_reference.md` §9). In `house_map_v4` that was **11.8% of the cloud** — the
+> plate drawn at every position the rover occupied, tracing the driven path through the floor, which
+> is exactly the sort of artefact that makes a good map look broken. `--keep-rover` shows it if you
+> want to inspect the contamination itself.
+
+### The five questions — put these to the operator
+
+| | Question | What the answer means |
+|---|---|---|
+| **Q1** | **Any wall drawn twice?** Two parallel lines a few cm apart in the plan view, or a corridor at two slightly different angles. | **The one that decides it.** Doubling is the drift signature. In `house_map_v3` every wall was multiplied — the cause was a 19% odometry over-report, not heading. None ⇒ the geometry is sound. |
+| **Q2** | Is the shape the room? Proportions, doorways, where corners fall. | Wrong shape ⇒ the map is not of this place; stop and rebuild. |
+| **Q3** | Recognisable objects in true colour, in the right places *relative to each other*? | Confirms the map is metrically sound, not merely self-consistent. |
+| **Q4** | Anything **missing** that was driven past? | A coverage gap, **not** a geometry error — different problem, different fix (drive it again). |
+| **Q5** | Is the floor flat? Orbit to eye level and sight along it. | A sloping or bending floor is accumulated **pitch** error. The wall-calibration rig only ever checks yaw, so nothing else catches this. |
+
+### Reading the numbers the tool prints
+
+- **`room` vs `driven`** — the grid always extends beyond where the rover went, because the camera
+  sees ~4 m ahead. Those outer regions were observed at distance and never approached, so they are
+  the least accurate part of the map. In v4: a 2.98 × 3.92 m room from a 1.92 × 1.69 m driven area.
+- **Rover body percentage** — should be near zero once `Grid/DepthDecimation` is right. A large
+  number means the ROI mask is being discarded again.
+
+⚠️ **Glossy dark surfaces map badly** and this is expected, not a failure of the run: a blue steel
+almirah came out ~1.5× thicker than matte walls and closer than it really is. The error is toward the
+rover, so it **fails safe** for navigation. Do not "fix" it by deleting points from the cloud — that
+changes the picture, not the map.
+
 ## E3. Localizing
 
 ```bash
@@ -576,9 +620,10 @@ Wi-Fi fallback.
 
 Stubs, in the order they will likely be needed:
 
-- **F1 — Map creation, end to end.** Drive pattern, coverage requirements, the validation circles,
-  quality acceptance criteria. Partially covered by E1–E2; needs the *procedure* rather than the
-  commands.
+- **F1 — Map creation, end to end.** ✅ *Partly written:* E1 records the bag, E2 replay-maps,
+  **E2b verifies the result with the operator**. Still missing: the **drive pattern** as a procedure
+  (station spacing, how much rotation at each, how to close the loop) and **quantitative acceptance
+  criteria** to sit alongside E2b's five questions.
 - **F2 — Map export and QGC integration.** Getting an occupancy grid into QGroundControl, frame and
   origin conventions, how the operator picks a goal on it.
 - **F3 — Mission definition and execution.** How a patrol route is expressed, stored and run; what
