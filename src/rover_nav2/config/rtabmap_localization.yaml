@@ -50,6 +50,20 @@ rtabmap:
     RGBD/ProximityBySpace: "true"
     Rtabmap/DetectionRate: "2.0"
 
+    # Accept the FIRST good localization instead of waiting for a second one to
+    # corroborate it. Measured 2026-08-09: on the default (>0) cache, localization
+    # fired 4 good fixes in 12 min and committed NONE of them - map->odom stayed
+    # frozen at the database-restored value the whole time, both parked AND across a
+    # 2.4 m hand-push. The corroboration check verifies the second fix against the
+    # odometry travelled in between, and this vehicle's heading comes from the PX4
+    # EKF gyro (wheel_odometry_node yaw_source=gyro), which drifts 0.19 deg/s at
+    # rest - measured 18.6 deg over 96 s with the wheels stationary, matching the
+    # 33-44 deg/few-minutes noted above. Two fixes 12 s apart therefore disagree by
+    # ~2.3 deg of pure drift, so the second is never "more accurate" and it waits
+    # forever. There is no trustworthy heading to corroborate against, so
+    # corroboration is not a safety feature here - it is a deadlock.
+    RGBD/MaxOdomCacheSize: "0"
+
     # Localizing does NOT need to rebuild occupancy grids - the map already has
     # them, and map_server serves the grid for planning. Leaving this on made
     # every frame re-segment the cloud for nothing.
