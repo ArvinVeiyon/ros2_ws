@@ -15,7 +15,7 @@
 |---|---|
 | [A](#part-a--flight-controller-px4) | Flight controller (PX4) — firmware, airframe, calibration, **parameter changelog (A7)** |
 | [B](#part-b--companion-computer) | Companion computer — OS, workspace, build |
-| [C](#part-c--node-inventory) | Node inventory — every service, its job, parameters and topics |
+| [C](#part-c--node-inventory) | Node inventory — every service, its job, parameters and topics · **PX4 external modes (C10)** |
 | [D](#part-d--bring-up-and-verification) | Bring-up and verification |
 | [E](#part-e--routine-operations) | Routine operations |
 | [F](#part-f--not-yet-written) | Not yet written |
@@ -401,6 +401,145 @@ MAVLink reaches the companion at **`tcp:127.0.0.1:5760`** — this is what `tool
 the depth camera. No units, no live nodes. Slated for deletion.
 
 ---
+
+## C10. PX4 external modes (px4_ros2) — how they work, how to add one, how they fail
+
+AutoNav is not a PX4 flight mode. It is an **external mode**: a ROS 2 process that registers itself
+with the flight controller at runtime and then supplies setpoints. Understanding the handshake
+matters, because most of the ways it "breaks" are the handshake behaving exactly as designed.
+
+### C10.1 The registration handshake
+
+```
+companion                                   flight controller
+─────────                                   ─────────────────
+NodeWithMode<AutoNavMode> starts
+ModeBase(node, "AutoNav")
+  └── RegisterExtComponentRequest   ──────▶  name, register_arming_check,
+      (/fmu/in/…)                            register_mode, register_mode_executor
+                                  ◀──────  RegisterExtComponentReply
+                                             success · px4_ros2_api_version
+                                             mode_id · arming_check_id
+if !success                → throw, exit 250
+if api_version mismatch    → throw, exit 250
+if no reply before timeout → "timeout while registering external component"
+
+then, continuously:
+                                  ◀──────  arming check requests
+  arming check replies            ──────▶
+```
+
+**Both halves must keep running.** After a successful registration the FC keeps polling the mode's
+arming check; if those requests stop arriving the library throws
+`"Timeout, no request received from FMU, exiting (this can happen on FMU reboots)"` and the process
+exits with status 250. `Restart=always` then restarts it. **That exit is the library working
+correctly**, not a crash in our code.
+
+### C10.2 Mode ID → `nav_state`, and how to select the mode
+
+The FC assigns a `mode_id` **at registration time**. External modes are selected over MAVLink /
+`VehicleCommand` with `DO_SET_MODE`:
+
+| `param1` | `param2` (main) | `param3` (sub) | Selects |
+|---|---|---|---|
+| 1 | 4 | **11** | EXTERNAL1 ← **AutoNav lives here**, `nav_state 23` |
+| 1 | 4 | 12 … 18 | EXTERNAL2 … EXTERNAL8 |
+| 1 | 4 | 3 | Hold |
+| 1 | 1 | 0 | Manual |
+
+```bash
+# verified 2026-08-09: AutoNav is EXTERNAL1
+ros2 topic echo /fmu/out/vehicle_status_v1 --once | grep -E "nav_state|arming_state"
+```
+
+⚠️ `param1 = 1` means "custom mode"; it is **not** optional. `from_external = true` and
+`target_system = target_component = 1` are required — see `tools/l2_test.py::send_cmd`.
+
+### C10.3 🔴 MODE REQUIREMENTS — the part that catches everyone
+
+**A mode's requirements are not declared by the mode. They are derived from its setpoint type.**
+
+`AutoNavMode` constructs a `RoverSpeedRateSetpointType`, whose `getConfiguration()` returns:
+
+```cpp
+config.control_allocation_enabled = true;
+config.rates_enabled              = true;
+config.attitude_enabled           = false;
+config.velocity_enabled           = true;    // ← THIS creates the requirement
+config.position_enabled           = false;
+```
+
+`velocity_enabled = true` means **PX4 requires a valid local velocity estimate** to run the mode.
+
+> 🔑 **PX4 RELAXES MODE REQUIREMENTS WHILE DISARMED AND ENFORCES THEM WHILE ARMED.**
+>
+> This single fact produces the most confusing symptom in the system. Measured 2026-08-09:
+>
+> | | `DO_SET_MODE 4/11` | result |
+> |---|---|---|
+> | **disarmed** | accepted | `nav_state 23`, holds ≥20 s |
+> | **armed** | **refused** | `nav_state` stays 0 — **as does every other mode, including Hold** |
+>
+> It presents as "the external mode is broken". It is not. It is the estimate requirement being
+> enforced. QGroundControl shows it as a **navigation error**.
+
+**Where the velocity estimate comes from indoors:** nowhere, unless **`rover-ekf-bridge`** is
+running. There is no GPS indoors, and the bridge is the only external-vision velocity source.
+
+```bash
+# the check that tells you which situation you are in
+ros2 topic echo /fmu/out/failsafe_flags --once | grep -E "local_velocity_invalid|local_position_invalid"
+#   local_velocity_invalid: true   → AutoNav will be refused while armed
+#   local_velocity_invalid: false  → good to arm
+```
+
+**Measured 2026-08-09/10:** bridge stopped → `local_velocity_invalid: true`, mode refused armed.
+Bridge started → `false` within seconds → AutoNav engaged, held, drove, and S1 passed. The 2026-07-22
+floor test recorded the same thing: *"rover-ekf-bridge started → v_xy_valid true → AutoNav arms."*
+
+⛔ **Start the bridge on the FLOOR only.** Wheels-up + bridge + closed loop is a self-sustaining
+limit cycle that only a disarm stops. **Stop it again afterwards.**
+
+### C10.4 Mode lifecycle hooks
+
+| Hook | When | AutoNav's use |
+|---|---|---|
+| constructor | process start | create the setpoint type, declare params, subscribe `/cmd_vel` and `/scan` |
+| `onActivate()` | mode entered | hold zero until a `/cmd_vel` arrives |
+| `updateSetpoint(dt)` | every control cycle while active | apply the collision reflex, then publish speed + yaw rate |
+| `onDeactivate()` | mode left | stop |
+| arming check | continuously, FC-driven | reports whether the mode is safe to arm into |
+
+The reflex lives inside `updateSetpoint`, at the single funnel to the motors — so **nothing that
+commands `/cmd_vel` can bypass it**, whether that is a test script, Nav2 or a joystick.
+
+### C10.5 Adding a new external mode
+
+1. Subclass `px4_ros2::ModeBase`, give it a unique name string.
+2. Choose a setpoint type — **this determines the mode requirements** (C10.3). Pick the weakest one that
+   does the job; every capability you enable adds an estimator requirement that must be satisfiable
+   in your environment.
+3. Implement `updateSetpoint()`, and `onActivate()`/`onDeactivate()` if state must be reset.
+4. Wrap with `px4_ros2::NodeWithMode<YourMode>` in a `main.cpp`.
+5. Add a systemd unit with `Restart=always` — the process legitimately exits on FC reboot.
+6. It will land in the **next free EXTERNAL slot**. Do not hard-code sub=11 without checking; sweep
+   11–18 and read `nav_state` back.
+7. Verify: registration in the journal, `nav_state` reachable **disarmed**, then `failsafe_flags`
+   clear, then armed.
+
+### C10.6 Failure modes and their signatures
+
+| Symptom | Cause | Action |
+|---|---|---|
+| `nav_state` stays 0 **armed**, works disarmed | mode requirement unmet — almost always `local_velocity_invalid` | start `rover-ekf-bridge` (C10.3) |
+| `Timeout, no request received from FMU` → exit 250 | FC stopped polling the arming check; normal on FC reboot | systemd restarts it; check it settles |
+| Restart every ~12 s, forever | **TRAP 1c** — the FC is holding a stale external-mode slot. A stop-and-wait does **not** clear it | **stop the service, reboot the FC, then start the service** — in that order |
+| `Registration failed` / api version mismatch | `px4-ros2-interface-lib` and PX4 firmware out of step | match the lib branch to the firmware |
+| Mode enters but nothing moves | the reflex is blocking forward, or no `/cmd_vel` | `journalctl -u rover-autonav-mode | grep collision-diag` |
+
+> ⚠️ **`NRestarts` is cumulative since boot, not a rate.** On 2026-08-09 a count of 22 was read as an
+> active crash loop; the service in fact had 20 minutes of uptime and the real cause was C10.3. Check
+> the restart *timestamps* before concluding anything from the count.
 
 # Part D — Bring-up and verification
 
