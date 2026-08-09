@@ -63,7 +63,7 @@ them wastes weeks.
 | **Q1** | Where am I? | Localization | ⚠️ works at mapped viewpoints; **not yet fairly measured** |
 | **Q2** | What is around me? | Perception | ✅ forward sector only, permanently |
 | **Q3** | How do I get there? | Planning | ⬜ configured, unproven |
-| **Q4** | What if it goes wrong? | Failsafe | ⚠️ kill switch untested in AutoNav |
+| **Q4** | What if it goes wrong? | Failsafe | ⚠️ kill switch **passed 2026-07-22** (§12); reflex proven; no failsafe policy for lost localization or no-route |
 
 > 🔑 Q1 has historically been treated as gating everything. It gates **mapped patrol**. It does
 > **not** gate point-and-go, which needs no map and is available whenever the safety tests pass.
@@ -396,7 +396,7 @@ Safety tests gate capability tests. **Pass criteria, not opinions.**
 
 | ID | Test | Pass criterion | Status |
 |---|---|---|---|
-| **S1** | Kill switch in AutoNav | Wheels stop immediately, disarms | 🔴 **untested** |
+| **S1** | Kill switch in AutoNav | Wheels stop immediately, disarms | ✅ **PASSED 2026-07-22** — see below |
 | **S2** | Sensor loss while driving | Forward blocked within 0.5 s | ⬜ untested |
 | **S3** | Yaw loop diagnosis | Open vs closed loop | ✅ solved — friction deadband + windup |
 | **T1** | Speed tracking, 5 s at 0.2 m/s | Sustained `/odom` within ±20% | ✅ validated |
@@ -406,6 +406,24 @@ Safety tests gate capability tests. **Pass criteria, not opinions.**
 | **T5** | Dynamic obstacle | Stops before contact | ⬜ not run |
 | **T6** | Map build + re-localize | Pose recovered after restart, no operator input | ⚠️ map good; **pose not fairly measured** |
 | **T7** | Return to base | Routes home from an arbitrary mapped point | ⬜ not run |
+
+> ✅ **S1 RESOLVED 2026-08-09 — it passed on 2026-07-22 and the "untested" record was wrong.**
+> The L2 floor test log records *"kill switch (ch8) works ARMED inside AutoNav — now confirmed
+> live"*, and independently, during a software-armed run in the same session the rover drove at a
+> wall and the operator *"stopped it with the KILL switch (ch8) before impact"*. Ch8 stopped a
+> moving, armed rover in AutoNav, twice evidenced.
+>
+> 🔑 **The precondition, and why it looked broken again on 2026-08-09:** AutoNav uses
+> `RoverSpeedRateSetpointType`, whose configuration sets `velocity_enabled = true`, so PX4 requires
+> a valid local **velocity** estimate. Indoors the only source is **`rover-ekf-bridge`** — the
+> July run records *"rover-ekf-bridge started → v_xy_valid true → AutoNav arms"*. With the bridge
+> disabled, `failsafe_flags` reads `local_velocity_invalid: true`, and PX4 — which relaxes mode
+> requirements while disarmed and enforces them armed — refuses the switch. Measured: disarmed
+> `DO_SET_MODE 4/11` → nav_state 23 and holds; armed → refused, as is every other mode.
+>
+> ⇒ **S1 is not a pending test. It is a passed test with a precondition that must be restored
+> before any AutoNav run: start `rover-ekf-bridge` (on the FLOOR only — the limit-cycle hazard is
+> wheels-UP), confirm `v_xy_valid`, then arm.**
 
 ```
 S1 kill ─▶ S2 sensor loss ─▶ T1 speed ─▶ T2 straight goal

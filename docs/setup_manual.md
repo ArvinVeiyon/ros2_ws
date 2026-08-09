@@ -480,15 +480,26 @@ live stdout, so "arm on cue" is unreliable; **arm first** is the intended flow.
   on stands (diagnostic + `/scan`); arm only on the **floor**, where odometry is real.
 - The RC **kill (ch8)** is the final authority.
 
-> 🔴🔴 **UNRESOLVED CONTRADICTION — DO NOT ASSUME EITHER WAY.**
-> `rover_autonav_collision_stop.md` (2026-07-23) states the ch8 kill is *"proven to work armed inside
-> AutoNav"*. The project memory, `autonomy_plan.md` and `autonav_reference.md` §12 all record **S1 as
-> UNTESTED**, gating every armed autonomous drive.
+> ✅ **RESOLVED 2026-08-09 — the kill switch PASSED on 2026-07-22.** The L2 floor-test record has
+> *"kill switch (ch8) works ARMED inside AutoNav — now confirmed live"*, and independently, during
+> a software-armed run the same day the rover drove at a wall and the operator *"stopped it with
+> the KILL switch (ch8) before impact"*. `autonomy_plan.md`'s "S1 untested" was the stale record.
 >
-> These cannot both be true, and it is the most safety-critical claim in the project. **Resolve it by
-> running the test, not by choosing a document** — arm on the floor, creep at 0.15 m/s in AutoNav,
-> hit ch8, confirm the wheels stop and it disarms. Then correct whichever record is wrong, here and
-> in §12.
+> 🔴 **BUT THE PROCEDURE ABOVE IS INCOMPLETE WITHOUT THIS PRECONDITION.**
+> AutoNav uses `RoverSpeedRateSetpointType` (`velocity_enabled = true`), so PX4 requires a valid
+> local **velocity** estimate. Indoors the only source is **`rover-ekf-bridge`**. The July run
+> records *"rover-ekf-bridge started → v_xy_valid true → AutoNav arms"*, and *"bridge stopped
+> after → safe"*.
+>
+> With the bridge stopped, `failsafe_flags` reads `local_velocity_invalid: true` and **the mode
+> switch is refused while armed** — measured 2026-08-09: disarmed `DO_SET_MODE 4/11` → nav_state
+> 23 and holds ≥20 s; armed → refused, as is every other mode including Hold. PX4 relaxes mode
+> requirements when disarmed and enforces them when armed, so this looks like a broken mode and
+> is not one.
+>
+> **Step 0 of the procedure above: start `rover-ekf-bridge` and confirm `v_xy_valid`.**
+> ⛔ **ON THE FLOOR ONLY.** The limit-cycle hazard is wheels-UP: bridge + closed loop + wheels off
+> the ground is self-sustaining and only a disarm stops it. Stop the bridge again afterwards.
 
 ---
 
