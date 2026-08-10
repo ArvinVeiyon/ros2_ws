@@ -321,9 +321,15 @@ zero returns in the corridor.
 |---|---|---|
 | Whole-scan valid rays | **87.5%** (560/640), spread <0.5% | 400 consecutive scans, rover parked, room lit |
 | Forward-sector valid rays | **80.4%** (222/276) | same run, ±0.35 rad sector |
-| Blind (lens occluded) | ~0% | *recorded, not re-measured — see §13* |
+| **Blind — lens fully occluded** | **0.1 – 8.2%** steady (mean 3.1%) | **MEASURED 2026-08-10**, two 18 s occlusions on stands, 90 samples |
+| Partial occlusion (transition) | up to **29.4%** blind-side, down to **51.2%** healthy-side | same run — the hand entering/leaving the FOV |
 
-⇒ **Threshold 0.35** (`collision.min_valid_fraction`), ~2.5× below healthy and far above blind.
+> ⚠️ **"Blind ≈ 0%" was an assumption and it was wrong.** Measured steady blind is 0.1–8.2%, not 0.
+> Margin to the threshold is **~4×**, not infinite. The transition band (29.4% ↔ 51.2%) is where a
+> *partially* covered lens sits, and 0.35 falls inside it — which is the intended behaviour: as
+> validity falls the gate errs toward blocking.
+
+⇒ **Threshold 0.35** (`collision.min_valid_fraction`), ~2.5× below healthy and ~4× above blind.
 Anything that destroys returns — a starved camera, a non-reflective surface, an obstacle inside the
 0.308 m depth minimum — drives this **down**, so the gate fails safe. Cost: a genuinely open space
 deeper than `range_max` also reads low and blocks. That is the correct direction to be wrong.
@@ -529,7 +535,8 @@ and on what evidence. Re-assess rather than assume; supersede rather than edit i
 | **Map `house_map_v4` — 2D occupancy grid** | ⚠️ **NOT ESTABLISHED** | 🔑 **one database, two products, only one verified.** The operator check validated the cloud; the grid a *planner* consumes was never examined. Known grid-specific problems: the rover's own plate was 11.8% of the cloud (fixed only for FUTURE maps via `Grid/DepthDecimation: "2"`), and the v5 reprocess gained ray-tracing spikes and **was not adopted**. Check the grid before blaming a planner |
 | **Localization** | ❌ **NOT MEASURED** | both 2026-08-09 attempts were invalid — one truncated window, one starved camera. Do not quote a figure until it is re-run per §14 |
 | **Localization — corrections committed?** | ❌ **RECORDED FAILURE, UNRESOLVED** | `rtabmap_localization.yaml` records relocalization firing **4 good fixes in 12 min and committing NONE** — `map→odom` did not move. Accuracy is irrelevant if the transform never updates. **This single unknown gates all map-relative navigation**, and costs one run to settle |
-| **Collision reflex** | ⚠️ **fixed, NOT validated** | blocked correctly at 0.35 m whenever it could see, but failed open on a fresh-but-empty scan and caused a wall contact (§10). Gate added 2026-08-10; logic proven by forcing the threshold above the healthy fraction. **Real occlusion untested — no armed run until it is** |
+| **Collision reflex — perception gate (sensing)** | ✅ **VALIDATED 2026-08-10** | occlusion test on stands, two 18 s covers: validity 87.5% → 0.1–8.2%, gate blocked continuously, recovered to clear in **≤0.5 s** both directions. **The run reproduced the ratchet**: while blind the corridor reported `0.52 → 0.34 → 0.78 → inf → 0.62 → inf → 2.63`, every one of which the *ungated* logic would have read as clearance |
+| **Collision reflex — blocking motion (acting)** | ⬜ **NOT validated** | A1 was **passive**: the mode was inactive, so `forwardBlocked()` never gated a real setpoint. **S2 is what proves the acting path.** No armed autonomous run before it |
 | **S1 kill switch** | ✅ **passed** | 2026-07-22, **re-confirmed 2026-08-10**: 155 rpm peak, disarm and wheels-zero in the same 50 Hz sample (**<20 ms**) |
 
 **Standing caveats on the odometry verdict — both permanent, neither a defect:**

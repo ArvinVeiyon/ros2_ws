@@ -76,9 +76,15 @@ An interposer node on the `/cmd_vel` topic could be routed around; a clamp in `u
 > **Recognition cue:** `collision-diag: BLOCK forward (BLIND) (scan_fresh=yes valid=NN% ...)`.
 > Healthy is **87.5%** whole-scan (560/640) on this camera; blind is ~0%.
 >
-> ⏭ **Validation status: gate logic proven by forcing the threshold above the healthy fraction; a
-> real occluded-lens test has NOT been run.** No armed run until it has. Full record:
-> `autonav_reference.md` §8 and §10.
+> ✅ **VALIDATED 2026-08-10 (sensing).** Occlusion test on stands, two 18 s covers: whole-scan
+> validity 87.5% → **0.1–8.2%**, the gate blocked continuously through both, and recovered to `clear`
+> within **≤0.5 s** in each direction. The run **reproduced the ratchet** — while blind the corridor
+> reported `0.52 → 0.34 → 0.78 → inf → 0.62 → inf → 2.63`, every one of which the ungated logic would
+> have taken as clearance.
+>
+> ⬜ **NOT yet validated: the acting path.** A1 was passive (mode inactive), so `forwardBlocked()`
+> never gated a real setpoint. **S2 proves that.** No armed autonomous run before S2.
+> Full record: `autonav_reference.md` §8, §10, §13.
 - **Directional:** obstacles outside the ±20° cone are ignored (e.g. an object at −37° during testing was
   correctly not treated as ahead). Head-on walls fill the cone and are caught.
 
