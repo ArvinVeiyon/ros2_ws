@@ -54,8 +54,31 @@ An interposer node on the `/cmd_vel` topic could be routed around; a clamp in `u
 > with ~40% L/R asymmetry — so an ungated yaw command drove the rover into a wall the forward brake
 > could see perfectly well and had no authority over. Compounding it, the thresholds were then measured
 > at the *camera*: 0.60 m of raw range was only ~0.26 m of real bumper clearance.
-- **Fail-safe:** if `/scan` is stale/absent for longer than `scan_timeout` (0.5 s), forward is blocked
-  when `require_scan=true` — **no blind driving** if perception dies.
+- **Fail-safe, part 1 — STALE scan:** if `/scan` is stale/absent for longer than `scan_timeout`
+  (0.5 s), forward is blocked when `require_scan=true`.
+- **Fail-safe, part 2 — BLIND scan** *(added 2026-08-10)*: if a scan arrives on time but carries
+  fewer than `min_valid_fraction` (0.35) valid rays across the **whole** scan, forward is blocked
+  exactly as if it were stale.
+
+> 🔴 **"No blind driving if perception dies" was WRONG until 2026-08-10, and the rover hit a wall
+> proving it.** The stale check above covers a scan that stops *arriving*. It did not cover one that
+> arrives **empty**: zero valid rays in the corridor gave `min_x = inf` ⇒ clearance `inf` ⇒
+> "farther than `clear_distance`" ⇒ **unblocked**. With `scan_fresh=yes` throughout, the reflex
+> ratcheted forward through alternating glimpses —
+> `BLOCK 0.35 → clear inf → BLOCK 0.11 → clear 0.38 → BLOCK 0.26 → clear inf → BLOCK 0.08` —
+> ~0.3 m closer each cycle, until contact. The threshold was never wrong; it blocked at exactly
+> 0.35 m **whenever it could see**.
+>
+> The gate is evaluated **before** the clearance test, so a blind frame can never release a block
+> earned by the last frame that could see. Health is counted over the whole scan, not the corridor,
+> because a genuinely empty room also returns nothing ahead.
+>
+> **Recognition cue:** `collision-diag: BLOCK forward (BLIND) (scan_fresh=yes valid=NN% ...)`.
+> Healthy is **87.5%** whole-scan (560/640) on this camera; blind is ~0%.
+>
+> ⏭ **Validation status: gate logic proven by forcing the threshold above the healthy fraction; a
+> real occluded-lens test has NOT been run.** No armed run until it has. Full record:
+> `autonav_reference.md` §8 and §10.
 - **Directional:** obstacles outside the ±20° cone are ignored (e.g. an object at −37° during testing was
   correctly not treated as ahead). Head-on walls fill the cone and are caught.
 
@@ -68,6 +91,7 @@ An interposer node on the `/cmd_vel` topic could be routed around; a clamp in `u
 | `collision.clear_distance` | `0.50 m` | release only past this — **at the bumper** (raw scan 0.84 m) |
 | `collision.front_overhang` | `0.337 m` | scan origin → front bumper; measured, re-measure after a remount |
 | `collision.blocked_yaw_rate` | `0.30 rad/s` | max \|yaw\| while blocked (cap, not cancel) |
+| `collision.min_valid_fraction` | `0.35` | **perception-health gate**: fraction of the WHOLE scan that must carry a valid range before the clearance test runs at all. Healthy 0.875, blind ~0. Below it, blocks like a stale scan |
 | `collision.sector_half_angle` | `0.35 rad` (≈20°) | half-width of the forward cone |
 | `collision.scan_timeout` | `0.5 s` | `/scan` older than this ⇒ perception stale |
 | `collision.require_scan` | `true` | stale/absent scan ⇒ block forward (fail-safe) |

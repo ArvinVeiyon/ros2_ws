@@ -45,6 +45,32 @@ static constexpr double kSectorHalfAngle = 0.35; // [rad] +/- forward sector (~2
 // 2.5 cm of heading-error margin per side rather than the 5 cm claimed here.
 static constexpr double kCorridorHalfWidth = 0.275;  // [m]
 static constexpr double kScanTimeout = 0.5;      // [s] /scan older than this -> perception stale
+// PERCEPTION-HEALTH GATE. Fraction of the WHOLE scan that must carry a valid
+// range before the clearance test is allowed to run at all.
+//
+// This exists because of the 2026-08-10 00:30 wall contact. A fresh scan that
+// returns ZERO valid rays in the corridor yields min_x = inf => clearance = inf
+// => "farther than clear_distance" => UNBLOCKED. The rover ratcheted into a wall
+// through alternating glimpses, each blocking correctly and each released by the
+// blind frame that followed:
+//     BLOCK 0.35 -> clear inf -> BLOCK 0.11 -> clear 0.38 -> BLOCK 0.26 -> clear inf -> BLOCK 0.08
+// scan_fresh was "yes" the whole way. The stale-scan fail-safe below covers a
+// scan that stops ARRIVING; it did not cover one that arrives EMPTY. "Cannot
+// see" was being read as "nothing there" — the same fail-open class as the
+// dropped-ray bug already fixed at the footprint, missed here.
+//
+// It cannot be gated on "0 rays in the corridor": a genuinely empty room gives
+// that too. The discriminator is validity across the FULL scan, which does not
+// depend on where the rover is pointed. MEASURED 2026-08-10 on this camera:
+// healthy = 560/640 = 87.5% (corridor 222/276), stable to <0.5% run to run;
+// blind ~= 0%. 0.35 sits ~2.5x below healthy and far above blind.
+//
+// FAILS SAFE BY CONSTRUCTION: anything that destroys returns — a starved camera,
+// a surface with no IR return, an obstacle inside the 0.308 m depth minimum —
+// drives the fraction DOWN and therefore blocks. The cost is that a genuinely
+// open space larger than range_max also reads as low-validity and blocks; that
+// is the correct direction to be wrong, and indoors it does not arise.
+static constexpr double kMinValidFraction = 0.35;  // [0-1] of the whole scan
 // MEASURED 2026-07-28, rover parked square against a flat wall with zero gap:
 // the forward-sector min range read 0.337 m over 178 consecutive scans with no
 // spread (min == max == 0.337). That is the scan origin -> bumper distance.
@@ -102,6 +128,7 @@ class AutoNavMode : public px4_ros2::ModeBase {
     _sector_half = node.declare_parameter<double>("collision.sector_half_angle", kSectorHalfAngle);
     _corridor_half_width = node.declare_parameter<double>("collision.corridor_half_width", kCorridorHalfWidth);
     _scan_timeout = node.declare_parameter<double>("collision.scan_timeout", kScanTimeout);
+    _min_valid_fraction = node.declare_parameter<double>("collision.min_valid_fraction", kMinValidFraction);
     _front_overhang = node.declare_parameter<double>("collision.front_overhang", kFrontOverhang);
     _footprint_front = node.declare_parameter<double>("collision.footprint_front", kFootprintFront);
     _footprint_half_width = node.declare_parameter<double>("collision.footprint_half_width", kFootprintHalfWidth);
@@ -144,12 +171,13 @@ class AutoNavMode : public px4_ros2::ModeBase {
     RCLCPP_INFO(_node.get_logger(),
         "AutoNav collision-stop %s on %s: bumper stop<%.2fm clear>%.2fm (overhang %.3fm => forward "
         "%.2fm/%.2fm) corridor=+/-%.2fm sector<=+/-%.0fdeg scan_timeout=%.2fs require_scan=%s "
-        "footprint x<%.3f&|y|<%.3f (+%.3f margin) rejected blocked_yaw<=%.2frad/s",
+        "min_valid=%.0f%% footprint x<%.3f&|y|<%.3f (+%.3f margin) rejected blocked_yaw<=%.2frad/s",
         _collision_enabled ? "ON" : "OFF", _scan_topic.c_str(),
         _stop_distance, _clear_distance, _front_overhang,
         _stop_distance + _front_overhang, _clear_distance + _front_overhang,
         _corridor_half_width, _sector_half * 180.0 / M_PI, _scan_timeout,
-        _require_scan ? "yes" : "no", _footprint_front, _footprint_half_width, _footprint_margin,
+        _require_scan ? "yes" : "no", _min_valid_fraction * 100.0,
+        _footprint_front, _footprint_half_width, _footprint_margin,
         _blocked_yaw_rate);
 
     // Passive diagnostic: reports the collision-stop decision continuously,
@@ -227,13 +255,22 @@ class AutoNavMode : public px4_ros2::ModeBase {
   void onScan(const sensor_msgs::msg::LaserScan& scan)
   {
     float min_x = std::numeric_limits<float>::infinity();
+    size_t valid_total = 0;
     for (size_t i = 0; i < scan.ranges.size(); ++i) {
       const float ang = scan.angle_min + static_cast<float>(i) * scan.angle_increment;
+      const float r = scan.ranges[i];
+      const bool valid = std::isfinite(r) && r > 0.f && r >= scan.range_min && r <= scan.range_max;
+      // Health is counted over the WHOLE scan, BEFORE the sector reject, because
+      // it must answer "can the camera see?" independently of where the rover is
+      // pointed. Counting only the corridor would conflate an empty room with a
+      // blind one — the exact confusion that put the rover into a wall.
+      if (valid) {
+        ++valid_total;
+      }
       if (ang < -_sector_half || ang > _sector_half) {
         continue;  // outer bound only, cheap reject
       }
-      const float r = scan.ranges[i];
-      if (!std::isfinite(r) || r <= 0.f || r < scan.range_min || r > scan.range_max) {
+      if (!valid) {
         continue;  // 0 / inf / nan / out-of-spec are not valid obstacles
       }
       const float x = r * std::cos(ang);   // forward, along travel
@@ -261,8 +298,17 @@ class AutoNavMode : public px4_ros2::ModeBase {
       }
       min_x = std::min(min_x, x);
     }
-    _front_min_range = min_x;  // inf => nothing in the corridor
+    _front_min_range = min_x;  // inf => nothing in the corridor OR nothing visible; see the gate
+    _scan_valid_fraction = scan.ranges.empty()
+        ? 0.f
+        : static_cast<float>(valid_total) / static_cast<float>(scan.ranges.size());
     _last_scan_time = _node.get_clock()->now();
+  }
+
+  // Can the camera see at all? A scan that ARRIVES is not a scan that SEES.
+  bool perceptionHealthy() const
+  {
+    return _scan_valid_fraction >= static_cast<float>(_min_valid_fraction);
   }
 
   // Clearance at the front BUMPER, which is what the thresholds mean. Infinity
@@ -281,6 +327,15 @@ class AutoNavMode : public px4_ros2::ModeBase {
       // No trustworthy perception: fail-safe blocks forward unless explicitly permitted.
       return _require_scan;
     }
+    if (!perceptionHealthy()) {
+      // Fresh but BLIND. Treated exactly like stale, and deliberately placed
+      // BEFORE the clearance test so a blind frame can never reach the release
+      // branch below and clear a block earned by the last frame that could see.
+      RCLCPP_WARN_THROTTLE(_node.get_logger(), *_node.get_clock(), 1000,
+          "collision-stop: perception BLIND (valid %.0f%% < %.0f%%) — forward blocked",
+          _scan_valid_fraction * 100.f, _min_valid_fraction * 100.0);
+      return _require_scan;
+    }
     const float clearance = frontClearance();
     if (clearance < _stop_distance) {
       _blocked = true;
@@ -290,6 +345,21 @@ class AutoNavMode : public px4_ros2::ModeBase {
     return _blocked;
   }
 
+  enum class DiagState { Clear, Block, BlockStale, ClearStale, BlockBlind, ClearBlind };
+
+  static const char* diagLabel(DiagState s)
+  {
+    switch (s) {
+      case DiagState::Block:      return "BLOCK forward";
+      case DiagState::BlockStale: return "BLOCK forward (stale)";
+      case DiagState::ClearStale: return "clear (stale, permitted)";
+      case DiagState::BlockBlind: return "BLOCK forward (BLIND)";
+      case DiagState::ClearBlind: return "clear (blind, permitted)";
+      case DiagState::Clear:      break;
+    }
+    return "clear";
+  }
+
   // Passive, stateless view of the block decision for on-stands validation.
   // Uses the raw stop_distance (no hysteresis) so the flip point is a clean
   // ~stop_distance in both directions, easy to read while waving a wall.
@@ -297,14 +367,23 @@ class AutoNavMode : public px4_ros2::ModeBase {
   {
     const bool scan_fresh = _last_scan_time.nanoseconds() > 0 &&
         (_node.get_clock()->now() - _last_scan_time).seconds() < _scan_timeout;
-    const bool would_block = scan_fresh ? (frontClearance() < _stop_distance)
-                                        : _require_scan;
-    if (!_diag_inited || would_block != _diag_last) {
+    // Three states, not two: a BLIND report must be distinguishable from a
+    // clear one in the log, otherwise the ratchet that caused the 08-10 contact
+    // is invisible during on-stands validation — it printed "clear" both times.
+    DiagState state;
+    if (!scan_fresh) {
+      state = _require_scan ? DiagState::BlockStale : DiagState::ClearStale;
+    } else if (!perceptionHealthy()) {
+      state = _require_scan ? DiagState::BlockBlind : DiagState::ClearBlind;
+    } else {
+      state = (frontClearance() < _stop_distance) ? DiagState::Block : DiagState::Clear;
+    }
+    if (!_diag_inited || state != _diag_last) {
       RCLCPP_INFO(_node.get_logger(),
-          "collision-diag: %s  (scan_fresh=%s bumper=%.2fm raw=%.2fm)",
-          would_block ? "BLOCK forward" : "clear",
-          scan_fresh ? "yes" : "no", frontClearance(), _front_min_range);
-      _diag_last = would_block;
+          "collision-diag: %s  (scan_fresh=%s valid=%.0f%% bumper=%.2fm raw=%.2fm)",
+          diagLabel(state), scan_fresh ? "yes" : "no", _scan_valid_fraction * 100.f,
+          frontClearance(), _front_min_range);
+      _diag_last = state;
       _diag_inited = true;
     }
   }
@@ -330,16 +409,21 @@ class AutoNavMode : public px4_ros2::ModeBase {
   double _footprint_half_width{kFootprintHalfWidth};
   double _footprint_margin{kFootprintMargin};
   double _scan_timeout{kScanTimeout};
+  double _min_valid_fraction{kMinValidFraction};
   double _front_overhang{kFrontOverhang};
   double _blocked_yaw_rate{kBlockedYawRate};
 
   // collision-stop state
   float _front_min_range{std::numeric_limits<float>::infinity()};
+  // Starts at 0 => BLIND until the first scan proves otherwise. Never initialise
+  // this optimistically: the window between activation and the first scan would
+  // then be a fail-open hole of exactly the kind this gate exists to close.
+  float _scan_valid_fraction{0.f};
   rclcpp::Time _last_scan_time{0, 0, RCL_ROS_TIME};
   bool _blocked{false};
 
   // passive on-stands diagnostic
   rclcpp::TimerBase::SharedPtr _diag_timer;
-  bool _diag_last{false};
+  DiagState _diag_last{DiagState::Clear};
   bool _diag_inited{false};
 };

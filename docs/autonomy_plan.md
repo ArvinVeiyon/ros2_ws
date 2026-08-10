@@ -163,6 +163,31 @@ building outdoor**, because it determines whether RTL is a PX4 behaviour or a Na
 
 Modes are cumulative: each keeps every safety property of the one below.
 
+> 🔑 **M-numbers are the only mode numbering. Do not introduce a third scheme.** This file already
+> carries two ladders (M0–M4 here, L0–L5 below) and `roadmap.md` was **archived** precisely because
+> its L-numbers clashed with them. Operator goal language maps onto the modes as follows — use the
+> M-number in the docs and keep the plain-English name for conversation:
+>
+> | Operator phrasing | Mode | Needs a map? | Needs localization? |
+> |---|---|---|---|
+> | "drive without hitting things" | **M1** | no | no |
+> | "point and go, it steers around things" | **M2** | no | no |
+> | "go to a named place" | **M3** | yes | **yes** |
+> | "patrol a route" | **M3** + waypoint list | yes | **yes** |
+>
+> ⚠️ **A goal list that jumps from "don't hit things" straight to "go to a place on the map" skips
+> M2 — and M2 is the cheapest real autonomy we have.** It proves the entire chain with **no map and
+> no localization**, i.e. without the one capability that is currently unmeasured. Anything that
+> defers M2 behind mapping work is deferring the only autonomy currently within reach.
+>
+> ⛔ **None of these modes require VIO, and this vehicle has none.** Position is wheel + camera-gyro
+> dead reckoning; RTAB-Map consumes it rather than replacing it. See `autonav_reference.md` §6.
+>
+> ⚠️ **DOC FAULT, UNRESOLVED 2026-08-10: the L0–L5 ladder appears TWICE in this file** (from ~L278
+> and again from ~L429, the second copy carrying dates). Two versions of the same ladder, with no
+> statement of which is authoritative. **Resolve before planning off either.** Left in place rather
+> than silently deleted, because choosing which copy survives is not a formatting decision.
+
 ### M0 — MANUAL (baseline)
 Operator drives on RC. No autonomy. **State: working.**
 
@@ -253,7 +278,10 @@ S1+S2 safety ─▶ T1/T2 prove M2 ─▶ enable point cloud + voxel layer (A5)
 ```
 
 **Immediate blockers, in order:**
-1. S1 kill switch in AutoNav — safety, untested, gates everything.
+1. ~~S1 kill switch in AutoNav~~ — ✅ **PASSED** 2026-07-22, re-confirmed 2026-08-10 (<20 ms).
+   **Now blocking instead: validate the collision reflex's perception-health gate, then S2.** The
+   reflex failed open on a fresh-but-empty scan and caused a wall contact on 2026-08-10; the fix is
+   written but only proven synthetically. See `autonav_reference.md` §10.
 2. S3 yaw loop — unknown open/closed; gates every turning test.
 3. Point cloud + voxel layer — unlocks the camera's actual capability.
 4. Failsafe policy decisions (`NAV_RCL_ACT`, lost-localization, no-route) — design, no hardware.

@@ -164,6 +164,21 @@ RO_YAW_RATE_LIM   85.9        ⚠ deg/s, NOT rad/s
 
 ## 6. Odometry and heading
 
+> 🔑 **THERE IS NO VIO ON THIS VEHICLE, AND NEVER HAS BEEN.** Stated plainly because its absence has
+> been mistaken for its presence: nothing here performs visual-inertial odometry. Position is
+> **wheel ERPM + camera gyro dead reckoning** and nothing else (`wheel_odometry_node`). RTAB-Map
+> does **not** supply visual odometry either — `rtabmap_localization.yaml` sets `odom_frame_id: odom`
+> ("take odom from TF, not the message"), so it *consumes* this dead reckoning and adds `map→odom`
+> corrections on top, exactly like AMCL. Consequences: local, short-range navigation needs no VIO and
+> is already served (§13); map-relative navigation depends entirely on RTAB-Map committing those
+> corrections, which is **unmeasured** (§9). Adding VIO is not the fix for anything currently known
+> to be broken.
+>
+> ⚠️ **PX4 never knows where it is, by design.** `rover-ekf-bridge` feeds the FC **velocity only**,
+> via `LocalPositionMeasurementInterface`. Measured 2026-08-10 with the bridge stopped:
+> `xy_valid false`, `v_xy_valid false`, `heading_good_for_control false`, `dead_reckoning true`.
+> Position lives in ROS, not in the flight controller. Do not look for it there.
+
 **Wheels for distance, a gyro for heading.** This is a skid-steer: it has no steering axle and can
 only rotate by forcing all four tyres to scrub sideways. Slip is not a defect to minimise, it is the
 turning mechanism — which means `(v_right − v_left) / track` measures a quantity the wheels
@@ -206,7 +221,11 @@ together, and the stored `CAL_GYRO*_ZOFF` values are normal (−0.100 / +0.242 /
 degrades is the EKF's **fused yaw**. Two untested suspects:
 
 - the single internal magnetometer (`EKF2_MAG_TYPE=1`, the only yaw observer indoors)
-- GPS aiding (`EKF2_GPS_CTRL=7`, with `vehicle_gps_position` publishing at 3.3 Hz)
+- GPS aiding (`EKF2_GPS_CTRL=7`) — ⚠️ **the publish rate is contradicted and unresolved.** Recorded
+  earlier as `vehicle_gps_position` publishing at **3.3 Hz**; measured **0.0 Hz over 6 s on
+  2026-08-10**, with one advertised publisher but no messages. Both may have been true when taken.
+  **Resolve before using this as evidence either way** — if GPS is silent, it is a weaker suspect
+  for the fused-yaw fault than the magnetometer, and the test order should change accordingly.
 
 ### Implementation requirements for the camera-gyro path
 
@@ -286,6 +305,28 @@ the rover's own top plate by design** — every consumer must reject its own foo
 > ⛔ **Radial range cuts cannot express a rectangular body.** A dropped ray reads as *infinite
 > clearance*. The scan pipeline was fail-**open** until this was closed with `range_min` 0.31 plus a
 > per-ray rectangular footprint reject. **Check any new consumer for the same failure.**
+>
+> 🔴 **That instruction was already written here, and the collision reflex was still missed.** It
+> read `min_x = inf` as "nothing there" and drove into a wall on 2026-08-10 (§10). The warning above
+> is not sufficient on its own — a consumer must be checked, not merely warned.
+
+### Scan health — how to tell "sees nothing" from "cannot see"
+
+An empty scan and a blind scan are the same value (`inf`) and must be separated by a *different*
+measurement: the fraction of the **whole scan** carrying a valid range. Whole-scan, not sector,
+because health must not depend on where the vehicle is pointed — a genuinely empty room also yields
+zero returns in the corridor.
+
+| Quantity | Measured 2026-08-10 | Method |
+|---|---|---|
+| Whole-scan valid rays | **87.5%** (560/640), spread <0.5% | 400 consecutive scans, rover parked, room lit |
+| Forward-sector valid rays | **80.4%** (222/276) | same run, ±0.35 rad sector |
+| Blind (lens occluded) | ~0% | *recorded, not re-measured — see §13* |
+
+⇒ **Threshold 0.35** (`collision.min_valid_fraction`), ~2.5× below healthy and far above blind.
+Anything that destroys returns — a starved camera, a non-reflective surface, an obstacle inside the
+0.308 m depth minimum — drives this **down**, so the gate fails safe. Cost: a genuinely open space
+deeper than `range_max` also reads low and blocks. That is the correct direction to be wrong.
 
 ---
 
@@ -357,6 +398,29 @@ revisiting** — corroboration is a real quality filter when the odometry deserv
 | **`/odom` dies at rest** | VESCs doze; only address 13 stays online. Intermittent. | Handled — `publish_at_rest` emits a genuine zero-velocity sample |
 | **Tooling steals cores** | `claude` 55–86%, its npm update check 84%, the pemmican MOTD hook 100% | Both hooks disabled; `tools/cpu_catcher.sh` traps the rest |
 | **Glossy dark surfaces** | A blue steel almirah maps ~1.5× thicker than matte walls and lands closer than it is. *Suspected, not proven.* | Errs toward the rover — **fails safe** for navigation |
+| 🔴 **Collision reflex fails open on a fresh-but-empty scan** *(FIXED 2026-08-10, awaiting validation)* | Alternating `BLOCK`/`clear` in the collision-diag log with **`scan_fresh=yes` throughout**, each `clear` reading `bumper=inf`. The rover creeps ~0.3 m closer per cycle. | Perception-health gate, §8. **Recognition cue: `collision-diag: BLOCK forward (BLIND)` with `scan_fresh=yes`** |
+
+> 🔴 **THE 2026-08-10 00:30 WALL CONTACT — the reflex drove the rover into a wall while working
+> exactly as written.** It is a **ratchet**, and the threshold was never wrong:
+>
+> ```
+> BLOCK bumper=0.35 raw=0.68 → clear bumper=inf → BLOCK 0.11 → clear 0.38 → BLOCK 0.26 → clear inf → BLOCK 0.08
+> ```
+>
+> It blocked at exactly 0.35 m **whenever it could see**. Between glimpses the corridor returned
+> **zero valid rays** ⇒ `min_x = inf` ⇒ `frontClearance() = inf` ⇒ `inf > clear_distance` ⇒
+> `_blocked = false` ⇒ forward permitted. The existing fail-safe covered a **stale** scan
+> (`if (!scan_fresh) return _require_scan`); it did not cover a **fresh but empty** one. `mode.hpp`
+> even stated the assumption in a comment: `_front_min_range = min_x; // inf => nothing in the corridor`.
+> **"Cannot see" was being read as "nothing there."**
+>
+> **Fix (2026-08-10):** a perception-health gate placed *before* the clearance test, so a blind frame
+> can never reach the release branch and clear a block earned by the last frame that could see.
+> Constants and rationale in §8; threshold is the parameter `collision.min_valid_fraction`.
+>
+> ❓ **Still not established: why the wall vanished from the scan.** Candidates — inside the 0.308 m
+> depth minimum, poor IR return off that surface, or the wall leaving the ±20° corridor as the rover
+> yawed. The gate holds regardless of which it was, but the cause is a separate open question.
 
 > ⛔ **A restart does not clear a CPU-starvation latch.** The documented video-pipeline failure is
 > identical in appearance to a wedged camera and is cured only by removing the CPU contention first.
@@ -378,9 +442,9 @@ These follow from physics and geometry, not from preference. **Each has already 
 3. **Nav2's default spin and back-up recoveries must stay deleted.** They are precisely the two
    manoeuvres this vehicle cannot clear. A stock Nav2 config reintroduces them silently.
 
-4. **The kill switch must be tested in AutoNav before the first armed autonomous drive.** It is the
-   backstop for every armed test after it, and it has never been exercised in that mode. The test
-   costs ten minutes.
+4. **The kill switch must be proven in AutoNav before every armed autonomous campaign.** ✅ Passed
+   2026-07-22, re-confirmed 2026-08-10 (§12). It is the backstop for every armed test after it, so
+   re-confirm it after any change to the mode, the setpoint type or the tune — not once, forever.
 
 5. **Never key a camera by `/dev/videoN` or by-id.** Use `usbcam-<vidpid>-<serial>-i<iface>`. The
    Orbbec's video nodes appear and vanish with `rover-camera`, and the Pi's own `rpivid` and
@@ -388,6 +452,12 @@ These follow from physics and geometry, not from preference. **Each has already 
 
 6. **Never record resolution, frame rate or bitrate as fact.** Read them live. **Negotiated is not
    delivered** — colour has negotiated 30 fps while delivering 8.
+
+7. **Absence of a return is not absence of an obstacle.** Every perception consumer must distinguish
+   "nothing is there" from "I cannot see", because both arrive as the same value. A consumer that
+   treats `inf`, an empty scan or a dropped ray as *clearance* is fail-**open**, and this vehicle has
+   now produced that bug twice — once in the scan pipeline (§8), once in the collision reflex, where
+   it caused a wall contact (§10). **Gate on sensor health before acting on sensor value.**
 
 ---
 
@@ -398,7 +468,8 @@ Safety tests gate capability tests. **Pass criteria, not opinions.**
 | ID | Test | Pass criterion | Status |
 |---|---|---|---|
 | **S1** | Kill switch in AutoNav | Wheels stop immediately, disarms | ✅ **PASSED** 2026-07-22, **re-confirmed 2026-08-10** — see below |
-| **S2** | Sensor loss while driving | Forward blocked within 0.5 s | ⬜ untested |
+| **S2** | Sensor loss while driving | Forward blocked within 0.5 s | ⬜ untested — **now testable**: the fail-open it would have exposed is fixed (§10). `tools/s2_sensor_loss_test.py` written and compile-checked; it correctly aborted with no motion when the reflex was already blocking. Validate **passively on stands first**, ≤0.08 m/s on the first moving run |
+| **S2b** | Camera loss (`rover-camera` killed) | Forward blocked; heading loss handled | ⬜ untested — harsher than S2: loses `/scan` **and** the heading gyro together, a risk created by making heading depend on the camera (§6) |
 | **S3** | Yaw loop diagnosis | Open vs closed loop | ✅ solved — friction deadband + windup |
 | **T1** | Speed tracking, 5 s at 0.2 m/s | Sustained `/odom` within ±20% | ✅ validated |
 | **T2** | Straight goal, clear 2 m corridor | Arrives within 0.20 m, no collision stop | ⬜ not run |
@@ -454,8 +525,11 @@ and on what evidence. Re-assess rather than assume; supersede rather than edit i
 |---|---|---|
 | **Odometry (heading)** | ✅ **fit** | drift **0.00028 °/s** (144 s parked, below the wall's own 0.06° noise) · scale **0.04–0.47%** over three full circles at 6.1, 9.3 and 19.5 °/s · unaffected by driving |
 | **Odometry (distance)** | ✅ **fit** | ~**2.4%** residual after the `erpm_to_ms` correction, from 5 wall-referenced runs (was 19%) |
-| **Map `house_map_v4`** | ✅ **fit** | operator-verified: shape, objects and floor correct, **walls single**. One object (a glossy steel almirah) maps ~1.5× thick and closer than reality — errs toward the rover, so it fails safe |
+| **Map `house_map_v4` — visual / cloud layer** | ✅ **fit** | operator-verified: shape, objects and floor correct, **walls single**. One object (a glossy steel almirah) maps ~1.5× thick and closer than reality — errs toward the rover, so it fails safe. **This is the layer localization matches against** |
+| **Map `house_map_v4` — 2D occupancy grid** | ⚠️ **NOT ESTABLISHED** | 🔑 **one database, two products, only one verified.** The operator check validated the cloud; the grid a *planner* consumes was never examined. Known grid-specific problems: the rover's own plate was 11.8% of the cloud (fixed only for FUTURE maps via `Grid/DepthDecimation: "2"`), and the v5 reprocess gained ray-tracing spikes and **was not adopted**. Check the grid before blaming a planner |
 | **Localization** | ❌ **NOT MEASURED** | both 2026-08-09 attempts were invalid — one truncated window, one starved camera. Do not quote a figure until it is re-run per §14 |
+| **Localization — corrections committed?** | ❌ **RECORDED FAILURE, UNRESOLVED** | `rtabmap_localization.yaml` records relocalization firing **4 good fixes in 12 min and committing NONE** — `map→odom` did not move. Accuracy is irrelevant if the transform never updates. **This single unknown gates all map-relative navigation**, and costs one run to settle |
+| **Collision reflex** | ⚠️ **fixed, NOT validated** | blocked correctly at 0.35 m whenever it could see, but failed open on a fresh-but-empty scan and caused a wall contact (§10). Gate added 2026-08-10; logic proven by forcing the threshold above the healthy fraction. **Real occlusion untested — no armed run until it is** |
 | **S1 kill switch** | ✅ **passed** | 2026-07-22, **re-confirmed 2026-08-10**: 155 rpm peak, disarm and wheels-zero in the same 50 Hz sample (**<20 ms**) |
 
 **Standing caveats on the odometry verdict — both permanent, neither a defect:**
@@ -467,9 +541,11 @@ and on what evidence. Re-assess rather than assume; supersede rather than edit i
   camera failure degrades heading to unusable, it does not merely reduce accuracy. The queued
   `vehicle_angular_velocity` DDS bridge would remove this coupling.
 
-⇒ **What this permits:** dead reckoning over a mapping run (~1° heading, ~2% distance) and the
-first autonomous drive (T2). **What it does not permit:** anything depending on a localization
-number, until localization is actually measured.
+⇒ **What this permits:** dead reckoning over a mapping run (~1° heading, ~2% distance).
+**What it does not permit:** ⛔ **the first autonomous drive (T2) — withdrawn 2026-08-10.** The
+2026-08-09 assessment permitted T2; the wall contact that night showed the brake it relies on could
+fail open (§10). T2 is permitted again only after the reflex is validated on stands and S2 passes.
+Also not permitted: anything depending on a localization number, until localization is measured.
 
 ---
 
