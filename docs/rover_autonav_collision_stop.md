@@ -74,7 +74,8 @@ An interposer node on the `/cmd_vel` topic could be routed around; a clamp in `u
 > because a genuinely empty room also returns nothing ahead.
 >
 > **Recognition cue:** `collision-diag: BLOCK forward (BLIND) (scan_fresh=yes valid=NN% ...)`.
-> Healthy is **87.5%** whole-scan (560/640) on this camera; blind is ~0%.
+> Healthy is **87.5%** whole-scan (560/640) on this camera; **blind is 0.1–8.2%, MEASURED 2026-08-10**
+> — not 0, as previously assumed.
 >
 > ✅ **VALIDATED 2026-08-10 (sensing).** Occlusion test on stands, two 18 s covers: whole-scan
 > validity 87.5% → **0.1–8.2%**, the gate blocked continuously through both, and recovered to `clear`
@@ -97,7 +98,7 @@ An interposer node on the `/cmd_vel` topic could be routed around; a clamp in `u
 | `collision.clear_distance` | `0.50 m` | release only past this — **at the bumper** (raw scan 0.84 m) |
 | `collision.front_overhang` | `0.337 m` | scan origin → front bumper; measured, re-measure after a remount |
 | `collision.blocked_yaw_rate` | `0.30 rad/s` | max \|yaw\| while blocked (cap, not cancel) |
-| `collision.min_valid_fraction` | `0.35` | **perception-health gate**: fraction of the WHOLE scan that must carry a valid range before the clearance test runs at all. Healthy 0.875, blind ~0. Below it, blocks like a stale scan |
+| `collision.min_valid_fraction` | `0.35` | **perception-health gate**: fraction of the WHOLE scan that must carry a valid range before the clearance test runs at all. Healthy 0.875; **blind 0.001–0.082 measured 2026-08-10** (~4× margin). Below it, blocks like a stale scan |
 | `collision.sector_half_angle` | `0.35 rad` (≈20°) | half-width of the forward cone |
 | `collision.scan_timeout` | `0.5 s` | `/scan` older than this ⇒ perception stale |
 | `collision.require_scan` | `true` | stale/absent scan ⇒ block forward (fail-safe) |
@@ -111,9 +112,13 @@ possible with no arming and no motion. Example: `collision-diag: BLOCK forward (
 ### Known limitation
 
 The Orbbec reads returns closer than `range_min` (0.30 m) as invalid, and those are filtered out — an
-obstacle pressed against the lens could read as "clear". In practice `stop_distance` 0.60 m is well
-inside the valid range, so a wall is caught long before that. `/scan` geometry: 848 beams, FOV ±46°,
-range 0.30–8.0 m.
+obstacle pressed against the lens could read as "clear" **on the clearance test alone** — this is one
+of the paths that produced the 2026-08-10 wall contact, and it is now covered by the perception-health
+gate above, because an obstacle that close destroys returns across the scan.
+
+⚠️ **Two stale figures corrected 2026-08-10:** `stop_distance` is **0.35 m** at the bumper (this text
+said 0.60), and `/scan` carries **640 beams** as measured live (this text said 848). Re-measure rather
+than trusting either number after a camera or pipeline change.
 
 ## 4. Arming workflow (important)
 
