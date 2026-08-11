@@ -92,8 +92,21 @@ An interposer node on the `/cmd_vel` topic could be routed around; a clamp in `u
 > `nav_state` 23 while `updateSetpoint()` is never called, and the silent setpoint topic reads exactly
 > like a reflex that held. See §5.
 >
-> ⬜ **Still NOT validated: that the WHEELS stop.** Disarmed, no setpoint reaches an actuator. That is
-> the armed floor phase, `tools/s2_sensor_loss_test.py`, ≤0.08 m/s, `rover-ekf-bridge` started first.
+> ✅ **THE WHEELS STOP TOO — S2 FLOOR PASSED 2026-08-11** (armed, floor, 0.08 m/s, 3 runs,
+> `tools/s2_sensor_loss_test.py`). `/scan` was killed mid-drive; the rover stopped itself every time.
+> **Decision latency — last scan → emitted setpoint zero — was 509 and 514 ms** against a 500 ms
+> `scan_timeout`: ~10 ms of overhead, measured twice on an independent channel.
+>
+> 🔑 **Do not quote "last scan → wheels stopped" (1000–1078 ms) as the reflex's latency.** That interval
+> is two different phenomena: the reflex **deciding** (509/514 ms, 5 ms spread — deterministic) and the
+> wheels **coasting** (569/486 ms, 83 ms spread — mechanical, 16× more variable). They have **opposite
+> fixes**: a slow decision means `scan_timeout` or the update rate; a slow coast means a speed limit or
+> braking. The first S2 run reported only the combined figure and was wrongly graded `SLOW`.
+>
+> ⬜ **Still NOT measured: the ≥300 mm STANDOFF from a wall.** S2 runs a deliberately **clear** corridor —
+> it measures latency, never distance, and nothing tonight drove at an obstacle. Worse, no S2 run logged
+> `/odom`, so every distance quoted from them is **arithmetic from the commanded speed, not observed**.
+> `tools/collision_standoff_test.py` exists to close this. See §6.
 > Full record: `autonav_reference.md` §8, §10, §13.
 - **Directional:** obstacles outside the ±20° cone are ignored (e.g. an object at −37° during testing was
   correctly not treated as ahead). Head-on walls fill the cone and are caught.
@@ -164,8 +177,36 @@ script's live stdout, so "arm on cue" is unreliable; **arm-first is the intended
   fired — `collision-stop: forward blocked (front=0.59m)` — stopping forward ~0.59 m short of the wall.
   This is the actuator-path clamp firing while armed, on a real wall. **Proven.**
 
-## 6. Not yet done
+## 6. Standoff — the requirement no run has yet measured
 
+`collision.stop_distance` is **0.35 m at the bumper**, chosen to leave the required **≥300 mm** of
+standoff. Nothing on the current parameters has confirmed it. The 2026-07-22 armed wall test did stop
+short of a wall, but it predates the correction of `stop_distance` to 0.35 at the bumper, so it
+certifies the old geometry, not this one.
+
+**What the S2 coast measurement implies.** Against a *visible* wall there is no 500 ms scan timeout —
+the reflex fires within about one update tick — so the standoff is the trigger distance minus whatever
+the coast eats. Using the measured coast time (~0.49–0.57 s):
+
+| Speed | Coast distance ≈ ½·v·t | Standoff from 0.35 m | ≥0.30 m? |
+|---|---|---|---|
+| 0.08 m/s | ~0.02 m | ~0.33 m | ✅ |
+| 0.15 m/s | ~0.04 m | ~0.31 m | ⚠️ marginal |
+| 0.30 m/s | ~0.07 m | ~0.28 m | 🔴 fails |
+
+⚠️ **These are DERIVED, not measured**, and they assume coast *time* is independent of speed — which is
+precisely the thing nobody has measured, and which physically is unlikely to hold. Treat the table as a
+reason to test, never as a clearance to drive faster.
+
+`tools/collision_standoff_test.py` measures it directly: drives at a real wall with `/scan` healthy,
+logs `/odom` so travel is **observed rather than inferred**, and reports bumper clearance at three
+instants — reflex fire, wheels stopped, settled. It also prints a reminder to **tape-measure the final
+gap and record both**: the `/scan` figure and the tape answer different questions, and a disagreement
+between them is itself a finding about the depth sensor.
+
+## 7. Not yet done
+
+- **Run the standoff test above** — it gates every speed increase.
 - Nav2 + slam_toolbox (L5): the actual routing / avoidance / rerouting brain.
 - Yaw-gain tuning: armed yaw produced much higher wheel RPM (~700–850) than forward (~156) — see
   requirements R-tuning / memory todos #20.

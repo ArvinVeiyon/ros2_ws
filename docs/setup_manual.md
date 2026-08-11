@@ -300,6 +300,16 @@ ros2 launch orbbec_camera gemini_330_series.launch.py \
 
 ## C3. `rover-scan` — `launch/depth_to_scan.launch.py`
 
+> 🔴 **`is-active` IS NOT EVIDENCE FOR THIS UNIT, because it launches TWO nodes.** The unit's main
+> process is the *launch*. Kill `depthimage_to_laserscan_node` alone — which `tools/s2_sensor_loss_test.py`
+> does deliberately — and the launch survives on its other child, the `static_transform_publisher`.
+> systemd therefore sees a perfectly healthy unit: **`Restart=always` never fires, `is-active` says
+> `active`, and `/scan` is silent indefinitely.** This cost 10 minutes of a dead sensor on 2026-08-11.
+>
+> **After any test that kills the scan node:** `sudo systemctl restart rover-scan`, then **verify `/scan`
+> is actually publishing** (subscribe to it — do not read a unit state). The same trap applies to any
+> multi-node launch unit; `rover-camera` has its own version of it (§D2).
+
 Two nodes:
 
 **`static_transform_publisher`** — publishes `base_link → camera_link` from launch arguments

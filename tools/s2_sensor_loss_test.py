@@ -9,8 +9,16 @@ THIS MOVES A LIVE VEHICLE. Clear run-out, hand ON the kill switch (ch8), FLOOR o
 If the reflex does NOT fail safe, the rover keeps driving and only you stop it.
 
 Never arms, never disarms. Requires rover-ekf-bridge running (setup_manual C10.3).
-The scan publisher is killed with a plain SIGTERM - it runs as this user, and
-systemd Restart=always brings it back after ~5 s, so /scan self-restores.
+The scan publisher is killed with a plain SIGTERM - it runs as this user.
+
+/scan DOES NOT SELF-RESTORE. This file used to claim it did, via rover-scan's
+Restart=always; that is wrong and it cost ten minutes of a dead sensor on
+2026-08-11. The unit launches TWO children - a static_transform_publisher and
+depthimage_to_laserscan_node - so killing the scan node leaves the launch (the
+unit's MAIN process) alive holding the surviving TF child. systemd sees a
+healthy unit, Restart never fires, and `systemctl is-active` says active while
+/scan is silent. Run `sudo systemctl restart rover-scan` afterwards, every time,
+and verify /scan is actually publishing before trusting anything downstream.
 
   python3 tools/s2_sensor_loss_test.py                # 0.15 m/s
   python3 tools/s2_sensor_loss_test.py --settle 3.0   # drive longer before the cut
@@ -29,11 +37,18 @@ from rclpy.qos import (QoSProfile, ReliabilityPolicy, HistoryPolicy,
 
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import LaserScan
-from px4_msgs.msg import EscStatus, VehicleCommand, VehicleStatus
+from px4_msgs.msg import EscStatus, RoverSpeedSetpoint, VehicleCommand, VehicleStatus
 
 PX4_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                      durability=DurabilityPolicy.TRANSIENT_LOCAL,
                      history=HistoryPolicy.KEEP_LAST, depth=5)
+# /fmu/in/* are published by px4_ros2 INSIDE the mode, not by the DDS agent, and
+# they are VOLATILE - unlike /fmu/out/*, which the agent publishes TRANSIENT_LOCAL.
+# Subscribing TRANSIENT_LOCAL here receives NOTHING while looking exactly like a
+# working subscription on a quiet topic. See tools/s2_stands_test.py.
+SETPOINT_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
+                          durability=DurabilityPolicy.VOLATILE,
+                          history=HistoryPolicy.KEEP_LAST, depth=5)
 ARM_ARMED, NAV_AUTONAV = 2, 23
 
 
@@ -43,9 +58,15 @@ class S2(Node):
         self.arming = self.nav = None
         self.rpm = {}
         self.last_scan = None
+        self.sp = None            # last speed the mode actually emitted
+        self.sp_n = 0
+        self.sp_zero_at = None    # wall time the emitted speed first hit zero
+        self.watch_sp = False     # only latch after the cut
         self.create_subscription(VehicleStatus, '/fmu/out/vehicle_status_v1',
                                  self.st_cb, PX4_QOS)
         self.create_subscription(EscStatus, '/fmu/out/esc_status', self.esc_cb, PX4_QOS)
+        self.create_subscription(RoverSpeedSetpoint, '/fmu/in/rover_speed_setpoint',
+                                 self.sp_cb, SETPOINT_QOS)
         self.create_subscription(LaserScan, '/scan', self.scan_cb, qos_profile_sensor_data)
         self.cmd = self.create_publisher(Twist, '/cmd_vel', 10)
         self.vcmd = self.create_publisher(VehicleCommand, '/fmu/in/vehicle_command', PX4_QOS)
@@ -55,6 +76,12 @@ class S2(Node):
 
     def esc_cb(self, m):
         self.rpm = {e.esc_address: e.esc_rpm for e in m.esc[:m.esc_count]}
+
+    def sp_cb(self, m):
+        self.sp = m.speed_body_x
+        self.sp_n += 1
+        if self.watch_sp and self.sp_zero_at is None and abs(self.sp) <= 0.001:
+            self.sp_zero_at = time.time()
 
     def scan_cb(self, _):
         self.last_scan = time.time()
@@ -132,6 +159,24 @@ def main():
         rclpy.shutdown(); sys.exit(1)
     print(f'    moving, peak rpm {peak}')
 
+    # INSTRUMENT CHECK, and it must happen HERE - while driving, before the cut.
+    # A subscription that receives nothing would later latch no zero at all and
+    # read as "the setpoint never dropped", and a channel stuck at zero would
+    # read as an instant reflex. Neither is distinguishable from a real result
+    # without proving the topic carries the NON-ZERO commanded value right now.
+    if n.sp_n == 0:
+        n.drive(0.0); n.spin(0.5)
+        print('ABORT: no messages on /fmu/in/rover_speed_setpoint while driving.')
+        print('       The instrument is broken - this is NOT a reflex measurement.')
+        rclpy.shutdown(); sys.exit(2)
+    if n.sp is None or abs(n.sp) <= 0.001:
+        n.drive(0.0); n.spin(0.5)
+        print(f'ABORT: setpoint reads {n.sp} while the wheels turn at {peak} rpm.')
+        print('       A channel already at zero cannot demonstrate a drop to zero.')
+        rclpy.shutdown(); sys.exit(2)
+    print(f'    setpoint instrument OK: {n.sp_n} msgs, emitting {n.sp:.3f} m/s')
+
+    n.watch_sp = True             # latch the first zero from here on, not before
     os.kill(pid, signal.SIGTERM)
     t_cut = time.time()
     print(f'*** /scan publisher killed (pid {pid}) at t={t_cut-t0:.3f}s ***')
@@ -151,6 +196,11 @@ def main():
     print(f'  peak rpm while driving      {peak}')
     print(f'  last /scan before the cut   t={last_scan_at_cut-t0:.3f}s')
     print(f'  publisher killed            t={t_cut-t0:.3f}s')
+    if n.sp_zero_at is not None:
+        print(f'  SETPOINT zeroed             t={n.sp_zero_at-t0:.3f}s')
+    else:
+        print(f'  SETPOINT never zeroed       (last emitted {n.sp})')
+
     if t_stop is None:
         print(f'  🔴 WHEELS STILL TURNING after {a.bound:.1f}s — rpm {n.max_rpm()}')
         print('  => S2 FAILS: forward was NOT blocked on sensor loss.')
@@ -161,11 +211,27 @@ def main():
         print(f'  ==> latency from KILL       {1000*lat_cut:.0f} ms')
         print(f'  ==> latency from LAST SCAN  {1000*lat_scan:.0f} ms   '
               f'(reflex scan_timeout = 500 ms)')
-        verdict = 'PASSES' if lat_scan <= 0.8 else 'SLOW — investigate'
-        print(f'  {"✅" if verdict=="PASSES" else "⚠️"} S2 {verdict}: forward blocked on sensor loss.')
+
+    # THE SPLIT. "last scan -> wheels zero" is two different things end to end:
+    # the reflex DECIDING (bounded by scan_timeout) and the wheels physically
+    # SPINNING DOWN afterwards. They have opposite fixes - a slow decision means
+    # scan_timeout or the update rate; a slow spin-down means a speed limit or
+    # braking - so a single combined number cannot tell you what to change.
+    if n.sp_zero_at is not None:
+        decide = n.sp_zero_at - final_scan
+        print(f'\n  --- decision vs mechanics ---')
+        print(f'  DECIDE  last scan -> setpoint zero   {1000*decide:.0f} ms   '
+              f'(scan_timeout = 500 ms)')
+        if t_stop is not None:
+            spin = t_stop - n.sp_zero_at
+            print(f'  COAST   setpoint zero -> rpm zero    {1000*spin:.0f} ms   '
+                  f'(mechanical, not the reflex)')
+        ok = decide <= 0.8
+        print(f'  {"✅" if ok else "⚠️"} REFLEX {"PASSES" if ok else "SLOW"} on decision latency.')
     print('===========================================')
     print(f'final: arming={n.arming} nav={n.nav} rpm={n.max_rpm()}')
-    print('rover-scan restarts automatically in ~5 s (Restart=always).')
+    print('\n⚠️  /scan IS STILL DEAD — it does NOT self-restore (see the module docstring).')
+    print('    sudo systemctl restart rover-scan     then verify /scan is publishing.')
     rclpy.shutdown()
 
 
