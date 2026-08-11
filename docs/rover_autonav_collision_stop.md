@@ -224,9 +224,13 @@ at zero gap, 178 consecutive scans, `min == max`). Both terms are sound.
 2. **Speed commands are not honoured at crawl.** 0.060 m/s was commanded; ~0.146 m/s happened. There is
    an apparent floor near 0.12–0.15 m/s. **You cannot buy standoff margin by slowing down** until this
    is fixed — the request simply does not reach the wheels.
-3. **`/odom` and `/scan` disagree by 17%** over this run (1.288 m vs 1.543 m). Since `/scan` is the
-   trusted ruler here, **the suspicion falls on the wheel-odometry scale** — which `house_map_v4` was
-   built on. Settle with `tools/odom_scale_measure.py`.
+3. **`/odom` and `/scan` disagree by 17%** over this run (1.288 m vs 1.543 m) — **real, but NOT a scale
+   error.** A tape across `house_map_v4` on 2026-08-12 agreed with the mapped long span to within a few percent
+   (3.200 m mapped, 3.1 m taped, +3.2%) while the short axis erred the OTHER way (−5.8%) — opposite
+   directions, which no global scale factor produces. That vindicates `erpm_to_ms = 0.003900` and rules
+   out a global odometry scale fault. The earlier reading of this as a scale error is **withdrawn**. Whatever it is, is specific to
+   that run — most likely its very low speed. The node's `deadband_erpm` is only 5.0 against wheels
+   running 25–58, so the deadband is **not** the cause; that was checked.
 
 `tools/collision_standoff_test.py` measures it directly: drives at a real wall with `/scan` healthy,
 logs `/odom` so travel is **observed rather than inferred**, and reports bumper clearance at three
