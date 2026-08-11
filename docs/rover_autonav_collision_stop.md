@@ -103,10 +103,11 @@ An interposer node on the `/cmd_vel` topic could be routed around; a clamp in `u
 > fixes**: a slow decision means `scan_timeout` or the update rate; a slow coast means a speed limit or
 > braking. The first S2 run reported only the combined figure and was wrongly graded `SLOW`.
 >
-> ⬜ **Still NOT measured: the ≥300 mm STANDOFF from a wall.** S2 runs a deliberately **clear** corridor —
-> it measures latency, never distance, and nothing tonight drove at an obstacle. Worse, no S2 run logged
-> `/odom`, so every distance quoted from them is **arithmetic from the commanded speed, not observed**.
-> `tools/collision_standoff_test.py` exists to close this. See §6.
+> ✅ **STANDOFF MEASURED 2026-08-11 — 0.315 m vs 0.300 m required**, `tools/collision_standoff_test.py`,
+> n=1. Fired at **0.347 m** against a `stop_distance` of 0.35 — the trigger lands within **3 mm** of where
+> it claims to. What eats the margin is the **coast** (0.034 m), and coast scales with speed, so standoff
+> is a **speed** problem rather than a threshold problem. **Full detail, caveats and the two open risks
+> that came out of it: §6.**
 > Full record: `autonav_reference.md` §8, §10, §13.
 - **Directional:** obstacles outside the ±20° cone are ignored (e.g. an object at −37° during testing was
   correctly not treated as ahead). Head-on walls fill the cone and are caught.
@@ -210,15 +211,22 @@ run bore the model out**: at ~0.146 m/s actual, ½·v·t predicts 0.036 m of coa
 **The reflex triggers exactly where it claims to.** What eats the margin is the coast, and the coast is
 set by speed — so standoff is a *speed* problem, not a threshold problem.
 
-🔴 **Three caveats, and none of them are small:**
+**Why `/scan` is accepted here without a tape.** The 0.315 m is a *derived* bumper clearance; the raw
+camera-to-wall range was **0.652 m** (0.684 m at FIRE) — mid-range for the 336L, far from its 0.308 m
+depth minimum — against a flat perpendicular wall, which is the target type depth cameras handle best.
+The `front_overhang` 0.337 m it subtracts is itself measured, not assumed (rover square against a wall
+at zero gap, 178 consecutive scans, `min == max`). Both terms are sound.
 
-1. **No tape.** The rover was repositioned before the gap was measured, so the sole witness to a 15 mm
-   margin is `/scan` — the same sensor whose scale is in question below. Repeat with a tape.
+🔴 **Two caveats that remain, and neither is small:**
+
+1. **15 mm of margin, n=1.** The pass is real but thin, and it was obtained at a speed the vehicle
+   chose rather than one we set (see below). Do not read it as headroom.
 2. **Speed commands are not honoured at crawl.** 0.060 m/s was commanded; ~0.146 m/s happened. There is
    an apparent floor near 0.12–0.15 m/s. **You cannot buy standoff margin by slowing down** until this
    is fixed — the request simply does not reach the wheels.
-3. **`/odom` and `/scan` disagree by 17%** over this run (1.288 m vs 1.543 m). Settle with
-   `tools/odom_scale_measure.py` before trusting either as a distance.
+3. **`/odom` and `/scan` disagree by 17%** over this run (1.288 m vs 1.543 m). Since `/scan` is the
+   trusted ruler here, **the suspicion falls on the wheel-odometry scale** — which `house_map_v4` was
+   built on. Settle with `tools/odom_scale_measure.py`.
 
 `tools/collision_standoff_test.py` measures it directly: drives at a real wall with `/scan` healthy,
 logs `/odom` so travel is **observed rather than inferred**, and reports bumper clearance at three
