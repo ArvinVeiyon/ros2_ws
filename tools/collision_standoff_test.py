@@ -35,7 +35,9 @@ Never arms, never disarms. Requires rover-ekf-bridge running (setup_manual C10).
   python3 tools/collision_standoff_test.py --speed 0.12 --max-travel 1.2
 """
 import argparse
+import json
 import math
+import os
 import sys
 import time
 
@@ -84,6 +86,7 @@ class Standoff(Node):
         self.odom_x = self.odom_y = None
         self.odom_x0 = self.odom_y0 = None
         self.odom_vx = 0.0
+        self.esc_log = []         # (t, left mean |erpm|, right mean |erpm|)
 
         self.create_subscription(VehicleStatus, '/fmu/out/vehicle_status_v1',
                                  self.st_cb, PX4_QOS)
@@ -100,6 +103,10 @@ class Standoff(Node):
 
     def esc_cb(self, m):
         self.rpm = {e.esc_address: e.esc_rpm for e in m.esc[:m.esc_count]}
+        l = [abs(self.rpm[a]) for a in (10, 11) if a in self.rpm]
+        r = [abs(self.rpm[a]) for a in (12, 13) if a in self.rpm]
+        if l and r:
+            self.esc_log.append((time.time(), sum(l)/len(l), sum(r)/len(r)))
 
     def sp_cb(self, m):
         self.sp = m.speed_body_x
@@ -163,6 +170,47 @@ class Standoff(Node):
             rclpy.spin_once(self, timeout_sec=0.01)
 
 
+def integrate(esc_log, gap_limit=0.25):
+    """ERPM-seconds, with the coverage accounting that makes it trustworthy.
+
+    erpm_to_ms = tape_distance / erpm_seconds. A silent version of this
+    under-counted a real 2 m drive by ~5x by dropping samples, so every skipped
+    interval and every lost second is counted and returned rather than absorbed.
+    """
+    if len(esc_log) < 2:
+        return None
+    tot = lost = 0.0; skipped = 0
+    for (t0, l0, r0), (t1, l1, r1) in zip(esc_log, esc_log[1:]):
+        dt = t1 - t0
+        if dt <= 0 or dt > gap_limit:
+            lost += max(dt, 0.0); skipped += 1; continue
+        tot += ((l0 + r0) / 2 + (l1 + r1) / 2) / 2 * dt
+    span = esc_log[-1][0] - esc_log[0][0]
+    return dict(erpm_seconds=tot, span_s=span, lost_s=lost, skipped=skipped,
+                coverage=(span - lost) / span if span > 0 else 0.0)
+
+
+def analyse(path, tape_start, tape_end):
+    """Turn two bumper-to-wall tape readings into the four-ruler comparison."""
+    d = json.load(open(path)); it = d['integral']
+    tape = tape_start - tape_end
+    print(f"\n--- {os.path.basename(path)} ---")
+    print(f"  tape  {tape_start:.3f} -> {tape_end:.3f}  = {tape:.3f} m travelled  <== ground truth")
+    print(f"  /scan travel       {d['scan_travel']:.3f} m   ({100*(d['scan_travel']/tape-1):+.1f}% vs tape)")
+    print(f"  /odom travel       {d['odom_travel']:.3f} m   ({100*(d['odom_travel']/tape-1):+.1f}% vs tape)")
+    print(f"  /odom vs /scan     {100*(d['odom_travel']/d['scan_travel']-1):+.1f}%   "
+          f"(the 2026-08-11 crawl saw -16.5%)")
+    print(f"\n  coverage           {100*it['coverage']:.1f}%  "
+          f"(span {it['span_s']:.2f}s, lost {it['lost_s']:.2f}s, {it['skipped']} gaps)")
+    if it['coverage'] < 0.95:
+        print("  \u26d4 COVERAGE TOO LOW - the integral is missing real motion. Do not use it.")
+    print(f"  ERPM-seconds       {it['erpm_seconds']:.1f}")
+    print(f"  erpm_to_ms         {tape/it['erpm_seconds']:.6f}   "
+          f"[configured 0.003900 \u00b7 geometric 0.004633]")
+    print(f"\n  standoff by tape   {tape_end:.3f} m   (requirement 0.300)")
+    print(f"  standoff by /scan  {d['settled']:.3f} m")
+
+
 def fail(n, msg, code=2):
     try:
         n.drive(0.0)
@@ -184,7 +232,19 @@ def main():
                     help='refuse to start unless the wall is at least this far past stop_distance')
     ap.add_argument('--spinup', type=float, default=4.0,
                     help='abort if the wheels have not turned by this point [s]')
+    ap.add_argument('--max-measured-speed', type=float, default=0.20,
+                    help='ABORT if /odom shows the rover exceeding this [m/s]')
+    ap.add_argument('--min-bumper', type=float, default=0.15,
+                    help='ABORT if clearance falls below this [m] - the odom-independent backstop')
+    ap.add_argument('--analyse', help='JSON from a previous run')
+    ap.add_argument('--tape-start', type=float, help='taped bumper->wall BEFORE the run')
+    ap.add_argument('--tape-end', type=float, help='taped bumper->wall AFTER it stopped')
     a = ap.parse_args()
+
+    if a.analyse:
+        if a.tape_start is None or a.tape_end is None:
+            print('--analyse needs --tape-start and --tape-end'); return 2
+        analyse(a.analyse, a.tape_start, a.tape_end); return 0
 
     rclpy.init()
     n = Standoff()
@@ -230,6 +290,7 @@ def main():
     print(f"{'t(s)':>6} {'bumper':>7} {'travel':>7} {'odom v':>7} {'setpt':>6} {'rpm':>5}")
     print('-' * 46)
 
+    n.esc_log.clear()
     t0 = time.time()
     nxt = 0.0
     fired_at = None       # wall time the emitted setpoint first went to zero
@@ -274,8 +335,32 @@ def main():
             reason = 'stopped'
             break
 
+        # GATE ON MEASURED SPEED, NEVER ON THE COMMAND.
+        # 2026-08-12: commanded 0.25 m/s produced ~0.9 m/s actual (3.6x) and the
+        # rover hit the wall. The reflex fired correctly at 0.322 m; at that speed
+        # the coast is ~0.30 m and no threshold could have saved it. The command
+        # is not a speed - only /odom knows how fast this vehicle is going.
+        if abs(n.odom_vx) > a.max_measured_speed:
+            n.drive(0.0); n.spin(0.6); n.drive(0.0)
+            print(f'\n\u26d4 ABORT: measured {abs(n.odom_vx):.2f} m/s exceeds the '
+                  f'{a.max_measured_speed:.2f} m/s limit (commanded {a.speed:.2f}).')
+            print(f'   Stopping distance at that speed exceeds the clearance left. '
+                  f'bumper {n.bumper:.2f} m, travel {n.travel():.2f} m.')
+            reason = 'MEASURED SPEED LIMIT'
+            break
+        # ODOM-INDEPENDENT BACKSTOP. --max-travel is denominated in /odom metres,
+        # and /odom under-reads by ~22% at crawl (2026-08-12), so a travel limit
+        # fires far LATER in real terms than it reads - at 0.1 m/s a 1.70 m limit
+        # is ~2.2 m of actual ground. Clearance does not depend on odom scale, so
+        # this is the guard that still works when the odometry is lying.
+        if math.isfinite(n.bumper) and n.bumper < a.min_bumper:
+            n.drive(0.0); n.spin(0.6); n.drive(0.0)
+            print(f'\n\u26d4 ABORT: clearance {n.bumper:.3f} m fell below the '
+                  f'{a.min_bumper:.2f} m backstop. The reflex did not hold.')
+            reason = 'MIN BUMPER BACKSTOP'
+            break
         if n.travel() >= a.max_travel:
-            reason = f'HARD TRAVEL LIMIT {a.max_travel:.2f} m'
+            reason = f'HARD TRAVEL LIMIT {a.max_travel:.2f} m (odom-denominated)'
             break
         if el >= a.bound:
             break
@@ -316,6 +401,17 @@ def main():
     print('        record BOTH - they answer different questions, and a')
     print('        disagreement is itself a finding about the depth sensor.')
     print('=============================================')
+    it = integrate(n.esc_log)
+    logp = os.path.expanduser(f'~/standoff_{time.strftime("%Y%m%d_%H%M%S")}.json')
+    json.dump(dict(speed=a.speed, reason=reason, bumper_start=b0,
+                   fire=b_fire, stop=b_stop, settled=b_settled,
+                   scan_travel=(b0 - b_settled), odom_travel=travel,
+                   integral=it, samples=len(n.esc_log)), open(logp, 'w'), indent=1)
+    if it:
+        print(f'  ERPM-seconds  {it["erpm_seconds"]:.1f}   coverage {100*it["coverage"]:.1f}%')
+    print(f'\n  TAPE the bumper-to-wall gap now, then:')
+    print(f'  python3 tools/collision_standoff_test.py --analyse {logp} \\')
+    print(f'      --tape-start <before> --tape-end <after>')
     print(f'final: arming={n.arming} nav={n.nav} rpm={n.max_rpm()}')
     print('AutoNav left engaged; it holds zero with no /cmd_vel. /scan untouched.')
     rclpy.shutdown()
