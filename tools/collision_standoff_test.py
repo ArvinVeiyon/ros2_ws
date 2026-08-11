@@ -182,6 +182,8 @@ def main():
     ap.add_argument('--bound', type=float, default=40.0, help='hard time limit [s]')
     ap.add_argument('--min-approach', type=float, default=0.60,
                     help='refuse to start unless the wall is at least this far past stop_distance')
+    ap.add_argument('--spinup', type=float, default=4.0,
+                    help='abort if the wheels have not turned by this point [s]')
     a = ap.parse_args()
 
     rclpy.init()
@@ -247,6 +249,22 @@ def main():
         if n.nav != NAV_AUTONAV:
             reason = f'AutoNav dropped (nav={n.nav})'
             break
+
+        # Below the friction deadband the rover simply never moves, and every
+        # instant below reads as "the reflex has not fired yet" - so the run
+        # would sit still for the full bound and report nothing. At reduced
+        # speed this is the LIKELY outcome, not an edge case. Catch it early and
+        # say so, rather than producing a silent non-result.
+        if el >= a.spinup and n.max_rpm() == 0 and fired_at is None:
+            n.drive(0.0)
+            n.spin(0.5)
+            print(f'\nWHEELS NEVER TURNED in {a.spinup:.1f}s at {a.speed:.3f} m/s '
+                  f'(travel {n.travel():.3f} m).')
+            print('  Below the friction deadband, or the reflex is already blocking.')
+            print(f'  bumper clearance {n.bumper:.2f} m, stop_distance {STOP_DISTANCE:.2f} m')
+            print('  INCONCLUSIVE - not a standoff measurement. Try a higher --speed.')
+            rclpy.shutdown()
+            sys.exit(3)
 
         # The reflex firing is read from what the mode EMITS, not from a log line.
         if fired_at is None and n.sp is not None and abs(n.sp) <= 0.001 and n.max_rpm() > 0:

@@ -194,9 +194,31 @@ the coast eats. Using the measured coast time (~0.49–0.57 s):
 | 0.15 m/s | ~0.04 m | ~0.31 m | ⚠️ marginal |
 | 0.30 m/s | ~0.07 m | ~0.28 m | 🔴 fails |
 
-⚠️ **These are DERIVED, not measured**, and they assume coast *time* is independent of speed — which is
-precisely the thing nobody has measured, and which physically is unlikely to hold. Treat the table as a
-reason to test, never as a clearance to drive faster.
+⚠️ **These were DERIVED, not measured** — they assume coast *time* is independent of speed. **The first
+run bore the model out**: at ~0.146 m/s actual, ½·v·t predicts 0.036 m of coast and 0.034 m was measured.
+
+### Run 1 — 2026-08-11, `/scan`-only, passes by 15 mm
+
+| Quantity | Value |
+|---|---|
+| Commanded speed | 0.060 m/s |
+| **Actual speed** | **~0.146 m/s** (wall closed 1.543 m in ~10.6 s) |
+| Bumper clearance at FIRE | **0.347 m** (vs `stop_distance` 0.35 — accurate to 3 mm) |
+| Coast | 0.034 m |
+| **Settled standoff** | **0.315 m** vs 0.300 required |
+
+**The reflex triggers exactly where it claims to.** What eats the margin is the coast, and the coast is
+set by speed — so standoff is a *speed* problem, not a threshold problem.
+
+🔴 **Three caveats, and none of them are small:**
+
+1. **No tape.** The rover was repositioned before the gap was measured, so the sole witness to a 15 mm
+   margin is `/scan` — the same sensor whose scale is in question below. Repeat with a tape.
+2. **Speed commands are not honoured at crawl.** 0.060 m/s was commanded; ~0.146 m/s happened. There is
+   an apparent floor near 0.12–0.15 m/s. **You cannot buy standoff margin by slowing down** until this
+   is fixed — the request simply does not reach the wheels.
+3. **`/odom` and `/scan` disagree by 17%** over this run (1.288 m vs 1.543 m). Settle with
+   `tools/odom_scale_measure.py` before trusting either as a distance.
 
 `tools/collision_standoff_test.py` measures it directly: drives at a real wall with `/scan` healthy,
 logs `/odom` so travel is **observed rather than inferred**, and reports bumper clearance at three
