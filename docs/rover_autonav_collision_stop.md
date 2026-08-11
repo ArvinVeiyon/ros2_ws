@@ -83,8 +83,17 @@ An interposer node on the `/cmd_vel` topic could be routed around; a clamp in `u
 > reported `0.52 → 0.34 → 0.78 → inf → 0.62 → inf → 2.63`, every one of which the ungated logic would
 > have taken as clearance.
 >
-> ⬜ **NOT yet validated: the acting path.** A1 was passive (mode inactive), so `forwardBlocked()`
-> never gated a real setpoint. **S2 proves that.** No armed autonomous run before S2.
+> ✅ **ACTING PATH VALIDATED 2026-08-11 (S2 stands, `tools/s2_stands_test.py`).** AutoNav engaged
+> **disarmed**, steady 0.15 m/s forward commanded, two covers of the lens. Through 27 s of clear vision
+> the emitted setpoint sat at **0.150** — the baseline that makes the result readable — and under both
+> covers it went to **0.000** with validity at **0.0–3.8%**: 30 consecutive blocked samples, **zero
+> leakage**, recovery inside one sample (**≤1 s** at this run's resolution) both times.
+> This required `activateEvenWhileDisarmed(true)` on the mode; without it a disarmed mode switch sets
+> `nav_state` 23 while `updateSetpoint()` is never called, and the silent setpoint topic reads exactly
+> like a reflex that held. See §5.
+>
+> ⬜ **Still NOT validated: that the WHEELS stop.** Disarmed, no setpoint reaches an actuator. That is
+> the armed floor phase, `tools/s2_sensor_loss_test.py`, ≤0.08 m/s, `rover-ekf-bridge` started first.
 > Full record: `autonav_reference.md` §8, §10, §13.
 - **Directional:** obstacles outside the ±20° cone are ignored (e.g. an object at −37° during testing was
   correctly not treated as ahead). Head-on walls fill the cone and are caught.

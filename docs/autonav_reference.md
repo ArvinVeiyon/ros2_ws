@@ -399,6 +399,7 @@ revisiting** — corroboration is a real quality filter when the odometry deserv
 
 | Fault | Signature | Action |
 |---|---|---|
+| **A disarmed external mode reads as selected but is NOT RUNNING** | `nav_state` = 23 and QGC agree the mode is chosen, yet `/fmu/in/rover_speed_setpoint` is **silent** and `"AutoNav activated"` never appears in the journal. `px4_ros2` sets `is_active` only when `nav_state` matches **and** (`armed` OR `activate_even_while_disarmed`) — `ModeBase::vehicleStatusUpdated`. Library default is **false**, so `updateSetpoint()` is never called. 🔑 **A silent setpoint topic then looks exactly like a reflex that held — this is a false-PASS generator, and it produced one aborted run on 2026-08-11.** | Fixed for AutoNav: constructed with `activateEvenWhileDisarmed(true)`, so the loop runs disarmed with the wheels unable to turn. **Never read a quiet setpoint topic as evidence; prove the channel carries a non-zero baseline first** |
 | **Camera colour collapses under CPU load** | Colour rate falls (19.9 → 11.2 Hz in six minutes) while depth holds. Every health check still passes; no error logged. | Measure the colour rate; restart `rover-camera` |
 | **Half-dead camera restart** | Unit active, parameters answer, gyro and accel streams start — **depth and colour never do**, silently. `systemctl is-active` does not catch it. | Restart again; verify with `tools/camera_restart_check.py` |
 | **`/odom` dies at rest** | VESCs doze; only address 13 stays online. Intermittent. | Handled — `publish_at_rest` emits a genuine zero-velocity sample |
@@ -474,7 +475,8 @@ Safety tests gate capability tests. **Pass criteria, not opinions.**
 | ID | Test | Pass criterion | Status |
 |---|---|---|---|
 | **S1** | Kill switch in AutoNav | Wheels stop immediately, disarms | ✅ **PASSED** 2026-07-22, **re-confirmed 2026-08-10** — see below |
-| **S2** | Sensor loss while driving | Forward blocked within 0.5 s | ⬜ untested — **now testable**: the fail-open it would have exposed is fixed (§10). `tools/s2_sensor_loss_test.py` written and compile-checked; it correctly aborted with no motion when the reflex was already blocking. Validate **passively on stands first**, ≤0.08 m/s on the first moving run |
+| **S2 stands** | Sensor loss gates a real setpoint (disarmed) | Emitted speed forced to 0 while blind, and **non-zero while seeing** | ✅ **PASSED 2026-08-11** — `tools/s2_stands_test.py`. Baseline 0.150 seeing → 0.000 under two covers, 30 consecutive blocked samples, zero leakage, recovery ≤1 s. Needed `activateEvenWhileDisarmed(true)` (§10) |
+| **S2 floor** | Sensor loss while actually driving | Wheels stop within 0.5 s | ⬜ untested — the remaining half. `tools/s2_sensor_loss_test.py` written and compile-checked; it correctly aborted with no motion when the reflex was already blocking. **Armed, floor, ≤0.08 m/s, `rover-ekf-bridge` started first** |
 | **S2b** | Camera loss (`rover-camera` killed) | Forward blocked; heading loss handled | ⬜ untested — harsher than S2: loses `/scan` **and** the heading gyro together, a risk created by making heading depend on the camera (§6) |
 | **S3** | Yaw loop diagnosis | Open vs closed loop | ✅ solved — friction deadband + windup |
 | **T1** | Speed tracking, 5 s at 0.2 m/s | Sustained `/odom` within ±20% | ✅ validated |
@@ -536,7 +538,8 @@ and on what evidence. Re-assess rather than assume; supersede rather than edit i
 | **Localization** | ❌ **NOT MEASURED** | both 2026-08-09 attempts were invalid — one truncated window, one starved camera. Do not quote a figure until it is re-run per §14 |
 | **Localization — corrections committed?** | ❌ **RECORDED FAILURE, UNRESOLVED** | `rtabmap_localization.yaml` records relocalization firing **4 good fixes in 12 min and committing NONE** — `map→odom` did not move. Accuracy is irrelevant if the transform never updates. **This single unknown gates all map-relative navigation**, and costs one run to settle |
 | **Collision reflex — perception gate (sensing)** | ✅ **VALIDATED 2026-08-10** | occlusion test on stands, two 18 s covers: validity 87.5% → 0.1–8.2%, gate blocked continuously, recovered to clear in **≤0.5 s** both directions. **The run reproduced the ratchet**: while blind the corridor reported `0.52 → 0.34 → 0.78 → inf → 0.62 → inf → 2.63`, every one of which the *ungated* logic would have read as clearance |
-| **Collision reflex — blocking motion (acting)** | ⬜ **NOT validated** | A1 was **passive**: the mode was inactive, so `forwardBlocked()` never gated a real setpoint. **S2 is what proves the acting path.** No armed autonomous run before it |
+| **Collision reflex — blocking motion (acting), SETPOINT** | ✅ **VALIDATED 2026-08-11** | S2 stands, `tools/s2_stands_test.py`, AutoNav engaged **disarmed** at 0.15 m/s commanded. Baseline 27 s seeing → emitted setpoint **0.150** (this control is what makes the zeros meaningful); two covers → **0.000** at **0.0–3.8%** validity, **30 consecutive blocked samples, zero leakage**, recovery inside one sample (**≤1 s**, the sampling period). Required `activateEvenWhileDisarmed(true)` — see §10 |
+| **Collision reflex — blocking motion (acting), WHEELS** | ⬜ **NOT validated** | S2 stands was disarmed, so no setpoint reached an actuator. Proving the wheels stop is the **armed floor** phase: `tools/s2_sensor_loss_test.py`, ≤0.08 m/s, `rover-ekf-bridge` started first. No other armed autonomous run before it |
 | **S1 kill switch** | ✅ **passed** | 2026-07-22, **re-confirmed 2026-08-10**: 155 rpm peak, disarm and wheels-zero in the same 50 Hz sample (**<20 ms**) |
 
 **Standing caveats on the odometry verdict — both permanent, neither a defect:**
@@ -551,7 +554,9 @@ and on what evidence. Re-assess rather than assume; supersede rather than edit i
 ⇒ **What this permits:** dead reckoning over a mapping run (~1° heading, ~2% distance).
 **What it does not permit:** ⛔ **the first autonomous drive (T2) — withdrawn 2026-08-10.** The
 2026-08-09 assessment permitted T2; the wall contact that night showed the brake it relies on could
-fail open (§10). T2 is permitted again only after the reflex is validated on stands and S2 passes.
+fail open (§10). The reflex is now validated on stands in both halves — sensing (A1, 2026-08-10) and
+setpoint-acting (S2 stands, 2026-08-11) — so what remains gating T2 is **S2 floor**: proof that the
+wheels themselves stop, armed, at ≤0.08 m/s.
 Also not permitted: anything depending on a localization number, until localization is measured.
 
 ---

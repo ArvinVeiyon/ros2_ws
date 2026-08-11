@@ -117,7 +117,20 @@ static constexpr double kBlockedYawRate = 0.3;   // [rad/s] max |yaw| while bloc
 
 class AutoNavMode : public px4_ros2::ModeBase {
  public:
-  explicit AutoNavMode(rclcpp::Node& node) : ModeBase(node, kModeName), _node(node)
+  // activateEvenWhileDisarmed: without it px4_ros2 sets is_active only when
+  // (nav_state matches AND armed) -- see ModeBase::vehicleStatusUpdated -- so a
+  // DISARMED mode switch moves nav_state to 23 while updateSetpoint() is never
+  // called at all. The mode looks selected and is not running. That cost a test
+  // run on 2026-08-11: the acting path could not be observed disarmed, because
+  // there was no acting path executing to observe.
+  //
+  // With it, the full control loop (including the collision reflex) runs while
+  // disarmed, so the brake can be validated against a REAL setpoint with the
+  // wheels physically unable to turn. Disarmed setpoints reach no actuator.
+  explicit AutoNavMode(rclcpp::Node& node)
+      : ModeBase(node, px4_ros2::ModeBase::Settings{kModeName}
+                           .activateEvenWhileDisarmed(true)),
+        _node(node)
   {
     _rover_setpoint = std::make_shared<px4_ros2::RoverSpeedRateSetpointType>(*this);
 

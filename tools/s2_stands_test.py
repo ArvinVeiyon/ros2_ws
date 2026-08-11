@@ -11,11 +11,21 @@ WHAT IT DOES
   the mode's real output on /fmu/in/rover_speed_setpoint while the operator
   covers the camera. Pass = the commanded speed is forced to 0 while blind.
 
-WHY DISARMED IS THE RIGHT CHOICE ON STANDS
-  Disarmed, PX4 relaxes mode requirements and accepts AutoNav without a velocity
-  estimate, so rover-ekf-bridge is NOT needed - which matters, because bridge +
-  wheels-up is the self-sustaining limit-cycle hazard (setup_manual C10). And
-  disarmed the motors cannot turn at all, so a reflex failure costs nothing.
+WHY DISARMED WORKS - AND WHAT HAD TO CHANGE TO MAKE IT WORK
+  This test is only possible because AutoNavMode is constructed with
+  activateEvenWhileDisarmed(true). Without it, px4_ros2 sets is_active only when
+  (nav_state matches AND armed) - see ModeBase::vehicleStatusUpdated - so a
+  disarmed mode switch moves nav_state to 23 while updateSetpoint() is NEVER
+  CALLED. The mode reads as selected and is not running, and the setpoint topic
+  stays silent. That is not "the reflex held"; it is nothing executing.
+  The first run of this script on 2026-08-11 hit exactly that and was aborted by
+  the instrument check below. Do not read a quiet setpoint topic as a result.
+
+  With the setting, the full control loop runs disarmed: the reflex gates a REAL
+  setpoint, while the wheels physically cannot turn, because disarmed setpoints
+  reach no actuator (S1 measured disarm -> wheels zero inside one 50 Hz sample).
+  rover-ekf-bridge is also not needed, which matters because bridge + wheels-up
+  is the self-sustaining limit-cycle hazard (setup_manual C10).
   The cost of disarming: this proves the setpoint is zeroed, not that the wheels
   stop. The floor phase (tools/s2_sensor_loss_test.py) proves the rest.
 
