@@ -20,7 +20,14 @@ PX4_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
 
 SIGN = {10: -1.0, 11: 1.0, 12: 1.0, 13: 1.0}   # addr 10 reports inverted ERPM
 LEFT, RIGHT = {11, 13}, {10, 12}
-ERPM_TO_MS = 0.000380
+# MUST match wheel_odometry_node's `erpm_to_ms` parameter (0.003900), or every
+# m/s this tool prints is wrong. It read 0.000380 until 2026-08-13 -- a missing
+# decimal place, almost certainly a typo for an older 0.003800 estimate -- which
+# made every speed it has ever printed ~10x too small.
+# NOTE the constant itself is speed-dependent (autonav_reference §5/§13): /odom
+# over-reads ~+5% at ~0.9 m/s and under-reads ~22% at crawl. Treat any m/s here
+# as the NODE's opinion, not ground truth.
+ERPM_TO_MS = 0.003900
 NAV = {0: 'Manual', 4: 'Hold', 23: 'AutoNav'}
 
 
