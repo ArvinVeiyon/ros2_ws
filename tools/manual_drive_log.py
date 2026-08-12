@@ -21,9 +21,15 @@ PX4_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
 SIGN = {10: -1.0, 11: 1.0, 12: 1.0, 13: 1.0}   # addr 10 reports inverted ERPM
 LEFT, RIGHT = {11, 13}, {10, 12}
 # MUST match wheel_odometry_node's `erpm_to_ms` parameter (0.003900), or every
-# m/s this tool prints is wrong. It read 0.000380 until 2026-08-13 -- a missing
-# decimal place, almost certainly a typo for an older 0.003800 estimate -- which
-# made every speed it has ever printed ~10x too small.
+# m/s this tool prints is wrong. It read 0.000380 until 2026-08-13, which made
+# every speed it ever printed ~10x too small.
+#
+# That 0.000380 was NOT a typo (I first recorded it as one, wrongly). It is a
+# DERIVED value from memory/rover_odometry.md: pi*0.1524 / (7*3*60), assuming
+# pole_pairs x gear_ratio = 21, i.e. 1260 ERPM-seconds per wheel revolution.
+# Counting revolutions against a taped drive on 2026-08-13 measured ~112.8
+# ERPM-s/rev -- an effective factor near 1.9, not 21. The derivation is wrong by
+# ~11x and has been corrected at its source.
 # NOTE the constant itself is speed-dependent (autonav_reference §5/§13): /odom
 # over-reads ~+5% at ~0.9 m/s and under-reads ~22% at crawl. Treat any m/s here
 # as the NODE's opinion, not ground truth.

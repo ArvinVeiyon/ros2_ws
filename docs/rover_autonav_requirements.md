@@ -43,7 +43,10 @@ Orbbec 336L ──USB3──► OrbbecSDK_ROS2 ─depth─► depthimage_to_lase
 ### R1 — Localization (indoor, GPS-denied)
 - `rover_odometry` package: subscribes `/fmu/out/esc_status`, computes differential odometry
   (full math, verified constants, and ESC address map documented in memory `rover_odometry.md`:
-  ERPM→m/s ×0.000380, **track 0.31 m** — measured 2026-07-21; the 0.43 m recorded here previously
+  ERPM→m/s **×0.003900** — ⚠️ **NOT the 0.000380 recorded here until 2026-08-13; that came from a
+  derivation assuming 21 pole-pairs×gearing, and a revolution count on the floor measured ≈1.9.
+  The old figure is wrong by ~11×**, and it is speed-dependent besides (autonav_reference §5/§13);
+  **track 0.31 m** — measured 2026-07-21; the 0.43 m recorded here previously
   was the *wheelbase* — left={11,13} right={10,12}), publishes `/odom` (nav_msgs) + TF
   `odom→base_link`. Achieves ~100 Hz, well past the ≥20 Hz bar.
 - **Heading comes from the gyro, not the wheels** (`yaw_source: gyro`, default since 2026-07-21).

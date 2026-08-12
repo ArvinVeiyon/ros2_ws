@@ -54,7 +54,11 @@ LEFT_ADDRS = {11, 13}
 RIGHT_ADDRS = {10, 12}
 SIGN = {10: -1.0, 11: 1.0, 12: 1.0, 13: 1.0}
 DEADBAND = 40.0
-CURRENT_SCALE = 0.000380
+# The node's ACTUAL parameter (wheel_odometry_node.py:116). Was 0.000380 here
+# until 2026-08-13 -- a stale copy of a value corrected in the config back on
+# 2026-08-01 as "~12.2x TOO SMALL", which made this tool's "ratio vs current"
+# output meaningless. See memory/rover_odometry.md.
+CURRENT_SCALE = 0.003900
 ESC_STALE_US = 300000
 MAX_DT = 0.5          # s, dt above this is treated as a gap, not a step
 
