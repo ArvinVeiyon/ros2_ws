@@ -71,8 +71,31 @@ def main():
     if args.value is None:
         return 0
 
-    hb = m.recv_match(type='HEARTBEAT', blocking=True, timeout=5)
-    armed = bool(hb and hb.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
+    # The arm check MUST come from the AUTOPILOT's heartbeat, not from whatever
+    # heartbeat happens to arrive first. Several components emit HEARTBEAT on this
+    # link -- on 2026-08-14 a GCS at 255:190 was advertising base_mode 0xc0, whose
+    # 0x80 bit is MAV_MODE_FLAG_SAFETY_ARMED, and an unfiltered recv_match saw it
+    # and refused every write against a DISARMED rover. The dangerous direction is
+    # the mirror image: a GCS heartbeat WITHOUT that bit would let a write through
+    # to a genuinely armed vehicle, silently defeating this guard.
+    # Filter on the real autopilot: component 1, autopilot type != INVALID(8).
+    hb = None
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        cand = m.recv_match(type='HEARTBEAT', blocking=True, timeout=1)
+        if cand is None:
+            continue
+        if (cand.get_srcComponent() == mavutil.mavlink.MAV_COMP_ID_AUTOPILOT1
+                and cand.autopilot != mavutil.mavlink.MAV_AUTOPILOT_INVALID):
+            hb = cand
+            break
+    if hb is None:
+        print('\nREFUSING: no AUTOPILOT heartbeat (component 1) within 5 s — '
+              'cannot confirm the vehicle is disarmed. Not writing.')
+        return 2
+    armed = bool(hb.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
+    print(f'  arm check: autopilot {hb.get_srcSystem()}:{hb.get_srcComponent()} '
+          f'base_mode=0x{hb.base_mode:02x} armed={armed}')
     if armed and not args.force_armed:
         print('\nREFUSING: vehicle is ARMED. Disarm before changing a control gain.')
         return 2

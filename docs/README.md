@@ -18,6 +18,7 @@ Kept separate because they hold derivations and raw data the summaries cannot ca
 |---|---|
 | [`rover_geometry.md`](rover_geometry.md) | **The authority on every dimension** and the camera mount, with how each was measured |
 | [`rover_yaw_response.md`](rover_yaw_response.md) | The full yaw derivation — response tables, the deadband analysis, why each parameter moved |
+| [`px4_param_audit.md`](px4_param_audit.md) | **Full PX4 parameter audit (2026-08-14)** — every value as read off the vehicle, what is verified correct, findings P1–P9 with derivations, and a dated change log. ⚠️ **The canonical *changelog* remains `setup_manual.md` §A7**; this file carries the audit and reasoning |
 | [`vision_streaming.md`](vision_streaming.md) | The FPV video fault record — the CPU-starvation latch and the camera wedge |
 | [`autonomy_plan.md`](autonomy_plan.md) | Operating modes M0–M4 and the autonomy-level appendices |
 | [`rover_autonav_requirements.md`](rover_autonav_requirements.md) | The AutoNav requirements set |

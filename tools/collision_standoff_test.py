@@ -206,7 +206,7 @@ def analyse(path, tape_start, tape_end):
         print("  \u26d4 COVERAGE TOO LOW - the integral is missing real motion. Do not use it.")
     print(f"  ERPM-seconds       {it['erpm_seconds']:.1f}")
     print(f"  erpm_to_ms         {tape/it['erpm_seconds']:.6f}   "
-          f"[configured 0.003900 \u00b7 geometric 0.004633]")
+          f"[configured 0.003900 ground-distance \u00b7 slip-free 0.004058; 0.004633 REFUTED]")
     print(f"\n  standoff by tape   {tape_end:.3f} m   (requirement 0.300)")
     print(f"  standoff by /scan  {d['settled']:.3f} m")
 

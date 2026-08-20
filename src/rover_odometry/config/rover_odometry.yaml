@@ -26,6 +26,35 @@ wheel_odometry_node:
     #     pole_pairs * gear_ratio = ERPM_seconds / (60 * revolutions)
     #                             = 516.7 / (60 * 5) = 1.722
     #     erpm_to_ms = 5 * pi * 0.1524 / 516.7 = 0.004633
+    #
+    # 🔴 CORRECTED 2026-08-13 -- THE MODEL ABOVE IS WRONG, AND SO ARE BOTH INPUTS.
+    #
+    # (a) The ratio is NOT "pole_pairs * gear_ratio". The VESC firmware already
+    #     divides the pole pairs out before it ever reaches CAN:
+    #         libcanard/canard_driver.c:494
+    #         status.rpm = mc_interface_get_rpm() / ((float)conf->si_motor_poles / 2.0);
+    #     So the value we integrate is MOTOR RPM -- pole-corrected, NOT
+    #     gear-corrected. Call the ratio R = motor revs per WHEEL rev.
+    # (b) These are DIRECT-DRIVE hub motors (Yalu 6", 24 V, 250 W). No gearbox,
+    #     so R must physically be 1. It measures 2. Cause: si_motor_poles is set
+    #     to the pole-PAIR count where the pole COUNT belongs -- a factor of
+    #     exactly 2, whatever the motor's real pole count is.
+    # (c) 516.7/5 = 103.34 ERPM-s/rev is LOW. Six independent hand-rotation runs
+    #     over three sessions and four wheels give:
+    #         103.34 / 112.80 / 133.30 / 132.86 / 114.46 / 120.71
+    #         pooled 119.58, sd 9.9%  ->  R = 1.9930, i.e. EXACTLY 2 to 0.35%
+    #     The scatter is the HUMAN REVOLUTION COUNT, not the hardware.
+    # (d) The wheel measures 155 mm, not 152.4. A 6" nominal tyre runs OVER
+    #     nominal; it is not worn under.
+    #
+    #     corrected slip-free:  erpm_to_ms = pi * 0.155 / 120 = 0.004058
+    #
+    # ⛔ 0.004633 WAS NEVER A VALID "GEOMETRIC BOUND". The long-standing puzzle
+    #    that the crawl scale "exceeds a bound slip cannot exceed" was the BOUND
+    #    being wrong. Do not reconstruct that argument.
+    # 🔴 si_motor_poles and erpm_to_ms are a LINKED PAIR. Correcting the pole
+    #    count in VESC Tool halves the reported rpm and makes /odom read 2x
+    #    short, silently, straight into PX4's speed loop. Never change one alone.
     # A powered 2.13 m tape-measured drive agreed independently at 1.788 /
     # 0.004463 (it carries tape error and a little slip, both of which bias it
     # low), so the two methods agree to within 4%.

@@ -7,6 +7,13 @@ WHY THIS EXISTS
   speed" was the working story, but the crawl figure EXCEEDS the geometric
   0.004633, which slip cannot do. So something else is eating distance.
 
+  RESOLVED 2026-08-13 -- AND THE PREMISE ABOVE WAS WRONG. 0.004633 was never a
+  valid bound: BOTH of its inputs are mis-measured (103.34 -> 119.58 ERPM-s/rev
+  pooled over six runs, and the wheel is 155 mm not 152.4). Corrected slip-free
+  constant is 0.004058, and the configured 0.003900 then implies a physical 4.0%
+  slip. THE SCALE IS INNOCENT: the ~20% crawl under-read is the ESC zero-dropout
+  corrupting the integral. See autonav_reference §5/§10.
+
   wheel_odometry_node.py:389 zeroes EACH WHEEL under `deadband_erpm` (5.0) and
   then averages the side. At crawl the wheels sit near 36 ERPM, so a wheel that
   dips under 5 is counted as a STOPPED wheel and drags its side's mean down.
@@ -310,15 +317,22 @@ def report(d, tape=None, revs=None, wheel_d=0.1524):
         for k, v in (('raw', raw), ('node-rule', node), ('combined', comb)):
             if abs(v) > 1e-6:
                 print(f"    erpm_to_ms from {k:9s} = {tape/abs(v):.6f}")
-        print(f"    (configured {ERPM_TO_MS:.6f}; geometric 0.004633)")
+        print(f"    (configured {ERPM_TO_MS:.6f} ground-distance; "
+              f"slip-free 0.004058 => 4.0% slip. 0.004633 is REFUTED)")
 
     # ------------------------------------------------- revolutions, if counted
     # Counting revolutions splits the constant into its two independent halves:
     #   ERPM-s / rev  = what the ENCODER counts per turn   (no ground involved)
     #   metres  / rev = the EFFECTIVE ROLLING CIRCUMFERENCE (no encoder involved)
-    # The geometric 0.004633 assumes 0.1524 m wheels and 516.7 ERPM-s / 5 rev.
-    # autonav_reference §5 records that the crawl scale EXCEEDS that bound, which
-    # slip cannot do -- so one of those two numbers is wrong. This tells us which.
+    # ANSWERED 2026-08-13: BOTH numbers were wrong, in the same direction.
+    #   ERPM-s/rev  103.34 -> 119.58 (pooled over SIX runs, sd 9.9%)  => R = 2.00
+    #   wheel        152.4 -> 155.0 mm (measured; 6" nominal runs OVER nominal)
+    # R = 2 because si_motor_poles holds the pole-PAIR count where the pole COUNT
+    # belongs; the firmware already divides pole pairs out (canard_driver.c:494),
+    # and these are direct-drive hub motors, so R would otherwise be 1.
+    # WARNING: the ONE-RUN error here is the HUMAN REVOLUTION COUNT, +/-10-16%.
+    # Never trust a single run -- two runs on the SAME wheel at a nominal 30 revs
+    # disagreed by 16% on 2026-08-13.
     if revs:
         print(f"\n  REVOLUTIONS COUNTED: {revs:g}")
         ws = d.get('wheel_erpm_s', {})
@@ -328,7 +342,7 @@ def report(d, tape=None, revs=None, wheel_d=0.1524):
                 continue
             per_rev = e / revs
             print(f"    addr {a}: {e:9.1f} ERPM-s -> {per_rev:8.2f} ERPM-s/rev"
-                  f"   (recorded 103.34 = 516.7/5)")
+                  f"   (pooled 2026-08-13: 119.58 => R=2.00)")
         if tape:
             m_per_rev = tape / revs
             geo = math.pi * wheel_d

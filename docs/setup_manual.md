@@ -126,6 +126,42 @@ change one; a value without a reason becomes undeletable folklore.
 | 08-02 | `RO_YAW_RATE_CORR` | 1.0 → 3.0 → **1.8** | Firmware doc recommends >1 for skid-steer friction. Final 1.8 set for the ~1.2 rad/s design point, the middle of the usable band. |
 | 08-02 | `RO_YAW_RATE_P` | → **0.08** | Highest gain that does not hunt across the friction deadband. |
 | 08-02 | `RO_YAW_RATE_I` | → **0.0** | 🔴 **The windup source.** One of the two causes of #20 (with the friction deadband). **Never restore 0.1.** |
+| **08-14** | `RO_DECEL_LIM` | −1 (off) → 0.5 → 🔴 **REVERTED to −1** | 🔴🔴 **THIS CHANGE CAUSED A HARD WALL HIT IN MANUAL DRIVE, SAME DAY.** Set on the belief it was auto-mode-only ("waypoint slowdown"). **It is not** — see the box below. ⛔ **DO NOT RE-APPLY without reading it.** |
+| **08-14** | `RO_ACCEL_LIM` | −1 (off) → 0.3 → 🔴 **REVERTED to −1** | Same fault, same revert. The 0.3 soft start also ramps the **manual stick**, 0→full over 2.0 s, which invites over-sticking. |
+| **08-14** | `RO_SPEED_LIM` | 0.70 → 0.60 → **REVERTED to 0.70** | Reverted at operator instruction with the other two ("change all to old value"). ⚠️ **This one was NOT implicated** — it only acts in POSCTL (`DifferentialManualMode::position()`), not Manual. Reverting restores the real P3 defect: setpoints in **0.60–0.70 saturate full throttle**. → `px4_param_audit.md` P3 |
+
+> 🔴🔴 **THE 08-14 SLEW-LIMIT INCIDENT — READ BEFORE TOUCHING `RO_ACCEL_LIM` / `RO_DECEL_LIM`**
+>
+> **`RO_ACCEL_LIM` and `RO_DECEL_LIM` ACT IN MANUAL MODE. They are NOT auto-only.** I set them
+> believing the firmware doc's "approaching waypoints in auto modes" described their whole scope,
+> and the rover hit a wall hard under RC on the operator's next drive.
+>
+> **The path, verified in source** (`~/PX4-Autopilot`, `a52c38b07d`):
+> `control_mode.cpp:55` — `NAVIGATION_STATE_MANUAL` sets `flag_control_allocation_enabled = true`
+> → `RoverDifferential.cpp:154` — so `DifferentialActControl::updateActControl()` **runs in Manual**
+> → `DifferentialActControl.cpp:75` — which slew-limits the **raw stick throttle** through
+> `RoverControl::throttleControl(..., RO_ACCEL_LIM, RO_DECEL_LIM, RO_MAX_THR_SPEED, dt)`
+> → `RoverControl.cpp:59` — decel slew = **`RO_DECEL_LIM / RO_MAX_THR_SPEED`** = 0.5/0.60 = 0.833 /s.
+>
+> 🔑 **THE EFFECT: RELEASING THE STICK NO LONGER STOPS THE ROVER.** With both at −1, line 70
+> (`setForcedValue`) passes the stick **straight to the motors** — centre the stick and the motors
+> cut instantly. With them set, the throttle **ramps down over up to 1.2 s while still driving**.
+> At the ~0.9 m/s this rover actually reaches that is ~0.5 m of *powered* travel after "stop",
+> **on top of** the ~0.30 m mechanical coast — roughly **3× the manual stopping distance**, with no
+> change in how the stick feels and **no reflex protection, because the reflex gates AutoNav
+> setpoints, not the operator.**
+>
+> 🔑 **THE METHOD ERROR, which is the transferable part:** I reasoned about the parameters from
+> their *documented purpose* instead of tracing **which controllers each `nav_state` enables**. A
+> rover param is not scoped by its description — it is scoped by the `flag_control_*_enabled` bits.
+> ⛔ **Before changing any `RO_*`, grep `control_mode.cpp` for every mode that enables the controller
+> that reads it, and check `DifferentialActControl` explicitly — allocation is enabled in EVERY
+> manual mode.** Relatedly: "not yet verified on the vehicle" is **not** the same as "not yet
+> active". These were live on the operator's next stick input.
+>
+> ⚠️ **`tools/set_param.py` writes RAM ONLY.** The revert above is RAM until `param save` runs —
+> **and an unsaved revert means a reboot silently restores the values that caused the crash.**
+> **Always finish with `param save`, then verify AFTER a reboot you have proven happened.**
 | 08-02 | `RO_YAW_P` | → **2.0** | Applied with the final tune. |
 | 08-02 | `RO_SPEED_LIM` | → **0.70** | m/s. |
 
