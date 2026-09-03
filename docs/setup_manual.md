@@ -802,6 +802,32 @@ python3 ~/ros2_ws/tools/wall_probe.py      # absolute reference: wall distance �
 > 🔑 **Start the measurement, then go quiet.** Issuing commands during a perception measurement
 > starves the camera and produces confident wrong answers.
 
+## E4b. Anything long-running goes in tmux
+
+The link to this box drops — WFB fades, the relay tunnel restarts — and a bare SSH shell takes its
+work down with it. A bag recording, a replay-map, a floor test or a long measurement must not be
+the thing that dies.
+
+```bash
+tmux new -As rover      # attach to "rover", create it if absent
+# ...start the long job, then let the link do whatever it likes...
+tmux attach -t rover    # after reconnecting
+```
+
+`tmux`, `screen` and `byobu` are all installed. `~/.tmux.conf` (2026-09-04) sets 50 000 lines of
+scrollback — after an outage that scrollback is the only record of what happened while you were
+gone — plus mouse scrolling and `aggressive-resize`, so reattaching from a different-sized terminal
+(the laptop at the rover instead of the GCS) does not letterbox the pane.
+
+⚠️ **Shift-drag to select** if you want the terminal's own copy/paste; mouse mode takes the
+plain drag.
+
+Since 2026-09-04 sshd also probes for dead peers — `ClientAliveInterval 30`,
+`ClientAliveCountMax 4` in `/etc/ssh/sshd_config.d/60-keepalive.conf` — so a session whose link
+died is reaped in ~2 minutes instead of parking until TCP gives up. 🔑 **That reaps the SESSION,
+not the WORK: it makes tmux more necessary, not less.** The probes are encrypted and in-channel,
+unlike `TCPKeepAlive`, so they also stop an idle connection from being timed out by the relay.
+
 ## E5. Recovery
 
 | Symptom | Action |
