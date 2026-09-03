@@ -813,8 +813,32 @@ python3 ~/ros2_ws/tools/wall_probe.py      # absolute reference: wall distance �
 | Service latched `failed` | `sudo systemctl reset-failed <unit>` |
 | No video | CPU-starvation latch first — a restart alone does not clear it |
 
-⚠️ Remote recovery path is **WFB → relay `:2222` → companion `:22` only.** There is no onboard
-Wi-Fi fallback.
+⚠️ Remote recovery path is **WFB → relay `:2222` → companion `:22`.** There is still no onboard
+**Wi-Fi** fallback — `wlan0` is off at the device-tree level. The wired path below is the only
+other way in.
+
+## E5b. Wired fallback — when WFB *and* the Wi-Fi uplink are both down
+
+Added 2026-09-03. Config: `/etc/netplan/60-eth0-recovery.yaml` (+ a `RequiredForOnline=no`
+drop-in in `/etc/systemd/network/10-netplan-eth0.network.d/`). `eth0` is `optional`, so an
+unplugged cable never delays boot, and its DHCP route metric is **300** — it can never outrank
+the Wi-Fi uplink's metric 50 while that uplink is alive.
+
+Plug a cable into the Pi's Ethernet port. Three ways in, in order of what the far end offers:
+
+| Far end | Companion gets | How you connect |
+|---|---|---|
+| Router / phone tether / laptop sharing | DHCP lease, route metric 300 | whatever the router hands out |
+| Laptop set to "automatic" (no DHCP server) | `169.254.x.x` link-local | `ssh roz@Vind-Roz.local` — avahi/mDNS, **zero config both ends** |
+| Laptop set to static `10.41.10.50/24` | `10.41.10.1/24`, always | `ssh roz@10.41.10.1` — no name resolution needed |
+
+`10.41.10.0/24` is the PX4 ethernet subnet and was already reserved for `eth0`. It collides with
+nothing in use: `192.168.1.0/24` = LAN uplink, `10.5.5.0/24` = WFB/relay tunnel, `10.5.7.0/24` =
+relay cluster plan. A future wired FC link (PX4 defaults to `10.41.10.2`) still fits alongside it.
+
+⚠️ The address only appears **once carrier is present** — `ip -br addr show eth0` reading empty
+with no cable in is correct, not a fault. Verify after plugging in with
+`networkctl status eth0` (expect `State: routable`), not with `is-active`.
 
 ---
 
