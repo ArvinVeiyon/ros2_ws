@@ -830,11 +830,12 @@ Plug a cable into the Pi's Ethernet port. Three ways in, in order of what the fa
 |---|---|---|
 | Router / phone tether / laptop sharing | DHCP lease, route metric 300 | whatever the router hands out |
 | Laptop set to "automatic" (no DHCP server) | `169.254.x.x` link-local | `ssh roz@Vind-Roz.local` — avahi/mDNS, **zero config both ends** |
-| Laptop set to static `10.41.10.50/24` | `10.41.10.1/24`, always | `ssh roz@10.41.10.1` — no name resolution needed |
+| Laptop set to static `10.10.10.20/24` | `10.10.10.10/24`, always | `ssh roz@10.10.10.10` — no name resolution needed |
 
-`10.41.10.0/24` is the PX4 ethernet subnet and was already reserved for `eth0`. It collides with
-nothing in use: `192.168.1.0/24` = LAN uplink, `10.5.5.0/24` = WFB/relay tunnel, `10.5.7.0/24` =
-relay cluster plan. A future wired FC link (PX4 defaults to `10.41.10.2`) still fits alongside it.
+`10.10.10.10` is deliberately trivial to remember under pressure — the laptop side is
+`10.10.10.20`. It collides with nothing in use: `192.168.1.0/24` = LAN uplink, `10.5.5.0/24` =
+WFB/relay tunnel, `10.5.7.0/24` = relay cluster plan — and it leaves `10.41.10.0/24`, the PX4
+ethernet default, free for a future wired FC link instead of spending it here.
 
 ⚠️ The address only appears **once carrier is present** — `ip -br addr show eth0` reading empty
 with no cable in is correct, not a fault. Verify after plugging in with
