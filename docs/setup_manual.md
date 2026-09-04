@@ -170,6 +170,24 @@ change one; a value without a reason becomes undeletable folklore.
 runaway occurred. An older note claiming otherwise assumed rad/s *and* assumed it applied; neither
 was true. Full derivation: `rover_yaw_response.md` §3 and §5.
 
+### UAVCAN ESC output (`UAVCAN_EC_*`) — rover-only, drives the four VESCs
+
+| Date | Parameter | Was → Now | Test / evidence |
+|---|---|---|---|
+| **09-04** | `UAVCAN_EC_MIN1..4` | 10 → **110** | 🔴 **Full reverse stopped all four wheels.** PX4 has **no disarmed parameter** (the `UAVCAN_EC` output block defines only min/max/failsafe), so `_disarmed_value` stays **0** and is sent whenever disarmed; the VESC fork guards `if (raw < 100) stop`. `MIN = 10` at full reverse falls under the same guard, and **the guard cannot tell disarmed(0) from full-reverse(10)**. 110 clears it with margin (100 exactly = zero margin). Forward (8191) was never affected — the "stop" code and full reverse sit at the **same end** of the 0–8191 scale. |
+| **09-04** | `UAVCAN_EC_MAX1..4` | 8191 → **8082** | ⛔ **Changed ONLY to keep neutral correct — do not revert this without also reverting MIN.** `110 + 8082 = 8192`, so neutral = **exactly 4096**, the value the VESC assumes. Raising MIN alone puts neutral at 4150 (+1.3%) which is inside the VESC's ±2% deadband but consumes **65% of it**; the symmetric form removes the deadband dependence entirely. Costs ~1.3% of range per end, invisible because PX4 already clamps at full stick. |
+
+> ✅ **MEASURED, armed on stands, before → after.** Full reverse went from **0 rpm / 0.00 A on all four**
+> to **−1514 / −1513 / −1568 / −1534 ERPM at 3.1–4.5 A**, matching full forward's magnitudes
+> (+1511 / +1515 / +1580 / +1534). **Neutral was re-checked and is unchanged: 0 rpm, 0.00 A** — the
+> creep risk the symmetric fix exists to prevent did not materialise. `esc_errorcount` was `0 = NONE`
+> throughout; there was never a VESC fault. ⚠️ **Verified on stands, unloaded — not yet driven.**
+>
+> ⏭ **The proper fix is on the VESC side:** subscribe to `safety.ArmingStatus`, which PX4 already
+> broadcasts, and delete the `<100` band. 🔴 **ORDERING HAZARD — that band is currently what stops the
+> motors when disarmed; removing it before the arming subscription works would delete the disarmed
+> stop.** Full record, measurement method and RC calibration: **`rc_configuration.md`**.
+
 ### Estimator (`EKF2_*`) — 🚁 **shared with the drone**
 
 | Parameter | Value | Status |
