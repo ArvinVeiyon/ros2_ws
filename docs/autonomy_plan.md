@@ -183,10 +183,24 @@ Modes are cumulative: each keeps every safety property of the one below.
 > ⛔ **None of these modes require VIO, and this vehicle has none.** Position is wheel + camera-gyro
 > dead reckoning; RTAB-Map consumes it rather than replacing it. See `autonav_reference.md` §6.
 >
-> ⚠️ **DOC FAULT, UNRESOLVED 2026-08-10: the L0–L5 ladder appears TWICE in this file** (from ~L278
-> and again from ~L429, the second copy carrying dates). Two versions of the same ladder, with no
-> statement of which is authoritative. **Resolve before planning off either.** Left in place rather
-> than silently deleted, because choosing which copy survives is not a formatting decision.
+> ✅ **DOC FAULT CLOSED 2026-09-04 — it was never a duplication.** The 08-10 note read Appendices A
+> and B as two rival copies of one ladder. They are not: **Appendix A = what each layer IS and what
+> to build; Appendix B = its outcome and definition of done.** They agree layer-for-layer
+> (L0 ✅ · L1 🔧 · L2 ❌ · L3 ❌ · L4 ❌ · L5 ❌ optional). **Both are authoritative, for different
+> questions.** Nothing to delete.
+>
+> 🔑 **LADDER OWNERSHIP — settled 2026-09-04. There are three schemes and only these three:**
+>
+> | Scheme | Answers | Where |
+> |---|---|---|
+> | **M0-M4** | what the rover DOES for a user — the **goal** ladder | §5 of this file |
+> | **L0-L5** | the **capability layers** we must build | Appendices A + B |
+> | **R1-R7** | the **requirements** themselves | `rover_autonav_requirements.md` §3 |
+>
+> 🗄 **RETIRED: the L0-L7 build-order ladder in `rover_autonav_requirements.md` §4.** *That* was the
+> third clashing L-scheme (its L5 = "Nav2 local costmap", ours = "goal reasoning"). Its L0-L4 are all
+> closed and its L5/L6/L7 are just M2 / M3 / the S+T tests. **Do not plan off it.**
+> ⏭ **Live plan and gate order: `memory/todos.md` → "REQUIREMENTS REALIGNMENT 2026-09-04".**
 
 ### M0 — MANUAL (baseline)
 Operator drives on RC. No autonomy. **State: working.**

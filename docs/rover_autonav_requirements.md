@@ -17,7 +17,7 @@ out, navigation interface in). Maps to autonomy roadmap phase 2 + first half of 
 Orbbec 336L ──USB3──► OrbbecSDK_ROS2 ─depth─► depthimage_to_laserscan ─/scan─┐   │
                     │                                                        ▼   │
                     │   VESC ERPM (/fmu/out/esc_status)                   Nav2   │
-                    │        │                                    (slam_toolbox: │
+                    │        │                                    (RTAB-Map:     │
                     │        ▼                                     map, global   │
                     │   rover_odometry ──/odom + TF odom→base_link─► planner,    │
                     │        │                                     local costmap,│
@@ -57,8 +57,19 @@ Orbbec 336L ──USB3──► OrbbecSDK_ROS2 ─depth─► depthimage_to_lase
 - Feed EKF2 via px4_ros2 `LocalPositionMeasurementInterface` (lib pinned release/1.17 @ 4a3370f) so
   PX4 local position becomes valid indoors. PX4 side: enable EV fusion (`EKF2_EV_CTRL=4`, verified
   working), GPS absent indoors anyway.
-- `slam_toolbox` (apt, **2.8.5 installed**) over depth-derived `/scan` provides `map→odom` correction + the global map.
-  Acceptance: return-to-start error < 0.3 m over a 20 m indoor loop.
+- ~~`slam_toolbox` (apt, **2.8.5 installed**) over depth-derived `/scan` provides `map→odom` correction + the global map.~~
+  🔴 **SUPERSEDED 2026-08-01 — the map/localization source is RTAB-Map, not slam_toolbox.**
+  `slam_toolbox` does 2D scan matching and 92° of view gives it too little overlap; RGB-D visual SLAM
+  is designed for exactly this camera and closes loops by *recognising places*. Live config is
+  `rover_nav2/config/rtabmap_{mapping,localization}.yaml` against `~/house_map_v4.db`. Rationale:
+  `autonomy_plan.md` §2.2. **This bullet was left stale until 2026-09-04.**
+  ⛔ **There is NO VIO and never was** — position is wheel ERPM + camera-gyro dead reckoning, and
+  RTAB-Map *consumes* our TF odom to add `map→odom`, exactly like AMCL. → `autonav_reference.md` §6.
+- Acceptance: ~~return-to-start error < 0.3 m over a 20 m indoor loop.~~
+  ⚠️ **NOT RUNNABLE IN THE CURRENT ROOM** (~2 m² of open floor vs a 0.73×0.56 m rover). It needs a
+  corridor or a re-scope — the same operator decision that blocks T2. → `memory/todos.md` **G3**.
+  🔑 **Adjudicate localization health on the ACCEPTED-FIX COUNT.** A moving `map→odom` with zero
+  accepted fixes is odometry drift, not localization. As of 08-16: **1213 rejected, 0 accepted.**
 
 ### R2 — Perception
 - OrbbecSDK_ROS2 wrapper (NEW install, todo #7) on the 336L (`usbcam-2bc50807-…`, USB3 BOX-B, role NAV-COLOR
@@ -70,7 +81,11 @@ Orbbec 336L ──USB3──► OrbbecSDK_ROS2 ─depth─► depthimage_to_lase
   (skid-steer can turn on the spot) and forward re-plan.
 
 ### R3 — Planning (Nav2, apt — **1.3.12 installed**)
-- Global: planner server (NavFn/Smac 2D) on slam_toolbox map → auto-routing A→B.
+- Global: planner server (NavFn/Smac 2D) on the **RTAB-Map** 2D occupancy grid (not slam_toolbox —
+  see R1) → auto-routing A→B. ✅ The v4 grid was audited 2026-08-16 and is **roughly correct**
+  (3.11 m² free vs ~2 m² ground truth). ⛔ Do NOT "fix" it: `MaxGroundHeight` 0.28 reads 3× the truth
+  and optimistic is the unsafe direction — **keep 0.10**; `Grid/NormalsSegmentation false` reproduces
+  the ray-tracing spikes that got v5 rejected. → `autonav_reference.md` §13.
 - Local: controller server (start DWB; evaluate MPPI later) + local costmap (rolling, 4×4 m, obstacle
   layer from `/scan`, inflation ≥ rover half-width 0.30 m + margin).
 - Footprint: rectangle of real chassis. **→ `docs/rover_geometry.md` is the authoritative source for
@@ -124,9 +139,18 @@ Orbbec 336L ──USB3──► OrbbecSDK_ROS2 ─depth─► depthimage_to_lase
 - All `/fmu/*` topics BEST_EFFORT QoS (existing convention). REP-105 frame names, REP-103 conventions
   (PX4 NED ↔ ROS ENU conversion handled by px4_ros2 lib).
 
-## 4. Build order — layered environment-first flow (re-ordered 2026-07-19 per roz)
+## 4. Build order — 🗄 **RETIRED 2026-09-04. HISTORICAL RECORD ONLY — DO NOT PLAN OFF THIS TABLE.**
 
-Principle: prove each layer of the stack with QGC in the loop before building the next on top.
+> 🔴 **This L0-L7 ladder was the third clashing "L" scheme.** Its L5 means "Nav2 local costmap";
+> `autonomy_plan.md`'s L5 means "goal reasoning" — two different ladders, same numbers, and
+> `roadmap.md` was already archived for exactly this collision.
+> **L0-L4 are all closed** (below), and its remaining rows are duplicates of live schemes:
+> **L5 → M2** · **L6 → M3** · **L7 → the S+T test suite** in `autonomy_plan.md` §7.
+> ⏭ **Plan off: M0-M4 (goals) · L0-L5 in `autonomy_plan.md` App. A+B (capability layers) · R1-R7
+> above (requirements). Live gate order: `memory/todos.md` → "REQUIREMENTS REALIGNMENT 2026-09-04".**
+
+Principle (as written 2026-07-19): prove each layer of the stack with QGC in the loop before building
+the next on top.
 
 | L | Deliverable | Done when |
 |---|---|---|
