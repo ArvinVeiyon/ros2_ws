@@ -4,9 +4,10 @@
 Passive. Commands nothing, never arms. Park the rover where the run will start
 and run this BEFORE arming.
 
-It mirrors the reflex collision-stop in autonav_mode/mode.hpp exactly -- same
-+/-20 deg sector, same validity test, same front_overhang subtraction, same
-hysteresis thresholds -- so what it prints is what the executor will decide.
+It mirrors the reflex collision-stop in autonav_mode/mode.hpp -- same +/-20 deg
+sector, same validity test, same CORRIDOR lateral test, same front_overhang
+subtraction, same hysteresis thresholds -- so what it prints is what the
+executor will decide.
 
 The number that matters is not just distance but COVERAGE: the fraction of rays
 in the forward sector that return a valid range. A depth camera aimed at a
@@ -30,6 +31,14 @@ from sensor_msgs.msg import LaserScan
 
 # Mirrors autonav_mode/include/autonav_mode/mode.hpp. If those change, change these.
 SECTOR_HALF = 0.35      # rad, +/- forward sector (~20 deg)
+CORRIDOR_HALF = 0.275   # m, lateral half-width of the rover's PATH.
+# 2026-09-12 BUGFIX: this file claimed to mirror the executor but filtered by ANGLE
+# ONLY. mode.hpp:290 also resolves each ray into forward/lateral components and
+# rejects |y| > corridor_half_width -- 'beside the rover, not in its path'. Without
+# that test a +/-20 deg cone is wider than the corridor beyond 0.225/tan(20deg) =
+# 0.618 m, so in a HALLWAY this tool reported the SIDE WALL as the blocking range
+# and read ~1.4 m where the executor sees open floor. Square to a flat wall the two
+# agree, which is why it went unnoticed. Keep in sync with collision.corridor_half_width.
 FRONT_OVERHANG = 0.337  # m, scan origin -> front bumper (MEASURED 2026-07-28)
 STOP_DISTANCE = 0.35    # m, bumper clearance below which forward is blocked
 CLEAR_DISTANCE = 0.50   # m, bumper clearance above which the block releases
@@ -57,18 +66,33 @@ class Preflight(Node):
         self.n += 1
         vals = []
         total = 0
+        valid_total = 0
         for i, r in enumerate(scan.ranges):
             ang = scan.angle_min + i * scan.angle_increment
+            # Exactly the executor's validity test.
+            ok = math.isfinite(r) and r > 0.0 and scan.range_min <= r <= scan.range_max
+            # 2026-09-12: HEALTH IS COUNTED OVER THE WHOLE SCAN, BEFORE the sector
+            # reject -- mode.hpp:276. It answers "can the camera see?" independently
+            # of where the rover points. Counting only the sector conflates an EMPTY
+            # ROOM with a BLIND one, which is the confusion that put the rover into a
+            # wall. Previously this file divided by the sector, which read 13% against
+            # the executor's 80% with the corridor filter on.
+            if ok:
+                valid_total += 1
             if ang < -SECTOR_HALF or ang > SECTOR_HALF:
                 continue
             total += 1
-            # Exactly the executor's validity test.
-            if not math.isfinite(r) or r <= 0.0 or r < scan.range_min or r > scan.range_max:
+            if not ok:
                 continue
+            # Exactly the executor's lateral test (mode.hpp:290).
+            x = r * math.cos(ang)
+            y = r * math.sin(ang)
+            if x <= 0.0 or abs(y) > CORRIDOR_HALF:
+                continue  # beside the rover, not in its path
             vals.append(r)
         self.sector_rays = total
-        if total:
-            self.coverage.append(len(vals) / total)
+        if scan.ranges:
+            self.coverage.append(valid_total / len(scan.ranges))
         if vals:
             self.mins.append(min(vals))
             self.spreads.append(max(vals) - min(vals))
