@@ -2,7 +2,7 @@
 """L2 floor/bench test: AutoNav mode I/O. YOU arm via RC — the script never arms.
 
 This will MOVE A LIVE VEHICLE. Have a clear run-out and your hand on the KILL
-switch (RC ch8). The AutoNav executor's reflex collision-stop is active, but it
+switch (RC ch12 — RC_MAP_KILL_SW=12, NOT ch8). The AutoNav executor's reflex collision-stop is active, but it
 is a backstop, not a substitute for the kill switch.
 
 Sequence (all over DDS, no MAVLink):
@@ -192,7 +192,7 @@ def main():
 
     try:
         if not pre_armed:
-            print(f'--- 3. ARM VIA RC NOW (ch5), throttle NEUTRAL. Hand on the KILL (ch8). ---')
+            print(f'--- 3. ARM VIA RC NOW (ch5), throttle NEUTRAL. Hand on the KILL (ch12). ---')
             print(f'    You may arm in Manual; the script switches to AutoNav next.')
             print(f'    Waiting up to {ARM_WAIT_TIMEOUT:.0f}s. Ctrl-C to abort.')
             if not n.wait_for_arm(ARM_WAIT_TIMEOUT):

@@ -36,7 +36,7 @@ WHY THIS IS NOT THE STANDOFF TEST WITH A DIFFERENT NUMBER
   clearance covers distance * ODOM_WORST_CASE + stop_distance, and the
   --min-bumper backstop (which does not depend on odom scale) guards the rest.
 
-THIS MOVES A LIVE VEHICLE. Hand ON the kill switch (ch8). FLOOR only.
+THIS MOVES A LIVE VEHICLE. Hand ON the kill switch (ch12 — RC_MAP_KILL_SW=12, NOT ch8). FLOOR only.
 Never arms, never disarms. Requires rover-ekf-bridge running (setup_manual C10).
 GATE ON MEASURED SPEED, NEVER ON THE COMMAND (2026-08-12: commanded 0.25 gave
 ~0.9 m/s and the rover hit a wall).
@@ -335,7 +335,7 @@ def main():
     print(f'AutoNav holding (nav={n.nav}).')
 
     print(f'\n>>> DRIVING {a.distance:.2f} ODOM m DOWN A CLEAR CORRIDOR at {a.speed} m/s <<<')
-    print(f'    hand on ch8. backstop: {a.min_bumper:.2f} m clearance, {a.bound:.0f} s\n')
+    print(f'    hand on ch12 (kill). backstop: {a.min_bumper:.2f} m clearance, {a.bound:.0f} s\n')
     print(f"{'t(s)':>6} {'travel':>7} {'lat':>7} {'yaw':>7} {'odom v':>7} "
           f"{'bumper':>7} {'setpt':>6} {'rpm':>5}")
     print('-' * 62)

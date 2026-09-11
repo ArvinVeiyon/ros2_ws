@@ -45,7 +45,7 @@ WHAT IT RECORDS
   a firmware flash; pair it with the vehicle_angular_velocity item if that ever
   happens.
 
-THIS MOVES A LIVE VEHICLE. Hand ON the kill switch (ch8). FLOOR only, and it
+THIS MOVES A LIVE VEHICLE. Hand ON the kill switch (ch12 — RC_MAP_KILL_SW=12, NOT ch8). FLOOR only, and it
 wants a CLEAR corridor -- unlike the standoff test there is no wall to stop it,
 so the gates below are the only thing that does. Never arms, never disarms.
 Requires rover-ekf-bridge running (setup_manual C10) -- without it the EKF
@@ -504,7 +504,7 @@ def main():
     print(f'AutoNav holding (nav={n.nav}).')
 
     print(f'\n>>> HOLDING {a.speed} m/s for {a.duration:.0f} s <<<')
-    print(f'    hand on ch8. gates: {a.max_measured_speed:.2f} m/s measured, '
+    print(f'    hand on ch12 (kill). gates: {a.max_measured_speed:.2f} m/s measured, '
           f'{a.min_bumper:.2f} m clearance, {a.max_travel:.2f} m travel\n')
     print(f"{'t(s)':>6} {'thr':>6} {'ekf|v|':>7} {'odom v':>7} {'travel':>7} "
           f"{'setpt':>6} {'rpm':>5} {'clear':>6}")

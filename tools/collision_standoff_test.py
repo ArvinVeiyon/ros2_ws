@@ -28,7 +28,7 @@ WHAT IT RECORDS, and why /odom is here
   so travel is observed, and reports the front clearance from /scan at three
   instants: reflex fire, wheels stopped, and settled.
 
-THIS MOVES A LIVE VEHICLE AT A WALL. Hand ON the kill switch (ch8). FLOOR only.
+THIS MOVES A LIVE VEHICLE AT A WALL. Hand ON the kill switch (ch12 — RC_MAP_KILL_SW=12, NOT ch8). FLOOR only.
 Never arms, never disarms. Requires rover-ekf-bridge running (setup_manual C10).
 
   python3 tools/collision_standoff_test.py                 # 0.08 m/s
@@ -286,7 +286,7 @@ def main():
     print(f'AutoNav holding (nav={n.nav}).')
 
     print(f'\n>>> DRIVING AT THE WALL at {a.speed} m/s <<<')
-    print(f'    hand on ch8. hard limits: {a.max_travel:.2f} m travel, {a.bound:.0f} s\n')
+    print(f'    hand on ch12 (kill). hard limits: {a.max_travel:.2f} m travel, {a.bound:.0f} s\n')
     print(f"{'t(s)':>6} {'bumper':>7} {'travel':>7} {'odom v':>7} {'setpt':>6} {'rpm':>5}")
     print('-' * 46)
 

@@ -1,20 +1,28 @@
 #!/usr/bin/env python3
-"""S1 — kill switch (RC ch8) while armed in AutoNav. THE safety backstop test.
+"""S1 — kill switch (RC ch12) while armed in AutoNav. THE safety backstop test.
 
-Settles a documented contradiction: rover_autonav_collision_stop.md says the ch8
+⛔ THE CHANNEL IS 12, NOT 8. `RC_MAP_KILL_SW`=12 read live off the FC 2026-09-12
+   (`RC_KILLSWITCH_TH`=0.75, `RC_MAP_ARM_SW`=5, `RC_MAP_FLTMODE`=6). Every doc and
+   tool said "ch8"; it was stale, almost certainly since the RC was remapped for the
+   brake on ch3/AUX1. On 2026-09-12 this cost a whole armed run: the operator moved
+   ch5 (the ARM switch) on my instruction, the kill was never pressed, and the run
+   was logged inconclusive. This tool watches arming_state, not a channel, so the
+   CODE was always right — only the printed instruction was wrong.
+
+Settles a documented contradiction: rover_autonav_collision_stop.md says the kill
 kill is "proven to work armed inside AutoNav"; autonomy_plan.md and
 autonav_reference.md §12 record S1 as UNTESTED and gating every armed autonomous
 drive. Both cannot be true.
 
 THIS MOVES A LIVE VEHICLE. Clear run-out, hand ON the kill switch, on the FLOOR.
 
-Never arms and never disarms. YOU arm via RC beforehand; YOU kill with ch8. The
+Never arms and never disarms. YOU arm via RC beforehand; YOU kill with ch12. The
 script only switches mode, commands a slow creep, and measures what happens.
 
   python3 tools/s1_kill_test.py                 # 0.15 m/s, 12 s bound
   python3 tools/s1_kill_test.py --speed 0.10
 
-Pass criterion: on ch8, wheels stop immediately and the vehicle disarms.
+Pass criterion: on ch12, wheels stop immediately and the vehicle disarms.
 Measured: latency from the disarm transition to all-wheel RPM == 0.
 """
 import argparse
@@ -111,7 +119,7 @@ def main():
         print(f'AutoNav did NOT HOLD (nav_state={n.nav}). Aborting.'); rclpy.shutdown(); sys.exit(1)
     print(f'AutoNav holding (nav_state={n.nav}).')
 
-    print(f'\n>>> DRIVING at {a.speed} m/s — HIT CH8 NOW <<<\n')
+    print(f'\n>>> DRIVING at {a.speed} m/s — HIT CH12 (KILL) NOW <<<\n')
     t0 = time.time()
     t_kill = None
     moved = 0
@@ -137,7 +145,7 @@ def main():
     if t_kill is None:
         print('NO DISARM SEEN within the time bound.')
         print(f'  wheels turned during {moved} samples; final rpm {n.max_rpm()}')
-        print('  => ch8 did NOT disarm. S1 FAILS as specified. Kill power manually.')
+        print('  => ch12 did NOT disarm. S1 FAILS as specified. Kill power manually.')
     else:
         after = [(t, r) for (t, ar, nv, r) in n.log if t >= t_kill]
         stop_t = next((t for t, r in after if r == 0), None)
@@ -150,7 +158,7 @@ def main():
         else:
             print(f'  wheels zero at   t = {stop_t:.3f} s')
             print(f'  ==> KILL LATENCY = {1000*(stop_t - t_kill):.0f} ms')
-            print('  ✅ S1 PASSES: ch8 disarmed and the wheels stopped.'
+            print('  ✅ S1 PASSES: ch12 disarmed and the wheels stopped.'
                   if peak > 0 else
                   '  ⚠️ wheels never turned before the kill — inconclusive, re-run with more speed.')
     print('===========================================')

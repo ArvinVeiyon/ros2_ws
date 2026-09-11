@@ -5,7 +5,7 @@ Pass criterion (autonomy_plan.md): forward blocked within 0.5 s of losing /scan.
 The reflex's own scan_timeout is 0.5 s, so a correct result lands just above it -
 report the measurement, do not round it to a verdict.
 
-THIS MOVES A LIVE VEHICLE. Clear run-out, hand ON the kill switch (ch8), FLOOR only.
+THIS MOVES A LIVE VEHICLE. Clear run-out, hand ON the kill switch (ch12 — RC_MAP_KILL_SW=12, NOT ch8), FLOOR only.
 If the reflex does NOT fail safe, the rover keeps driving and only you stop it.
 
 Never arms, never disarms. Requires rover-ekf-bridge running (setup_manual C10.3).
@@ -147,7 +147,7 @@ def main():
     print(f'AutoNav holding (nav={n.nav}).')
 
     print(f'\n>>> DRIVING at {a.speed} m/s for {a.settle}s, then CUTTING /scan <<<')
-    print('    (hand on ch8 — if the reflex fails, only you stop it)\n')
+    print('    (hand on ch12 (kill) — if the reflex fails, only you stop it)\n')
     t0 = time.time()
     while time.time() - t0 < a.settle:
         n.drive(a.speed); rclpy.spin_once(n, timeout_sec=0.01)
