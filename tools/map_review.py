@@ -6,8 +6,8 @@ person who drove it can say whether it is their room, so this produces the views
 that make that judgement possible - and strips the one thing that reliably
 confuses it, the rover's own body.
 
-    python3 tools/map_review.py ~/house_map_v4.db
-    python3 tools/map_review.py ~/house_map_v4.db --out /tmp/review --keep-rover
+    python3 tools/map_review.py ~/rover_data/maps/house_map_v4.db
+    python3 tools/map_review.py ~/rover_data/maps/house_map_v4.db --out /tmp/review --keep-rover
 
 Outputs, next to the database unless --out is given:
     <name>_review.png    three panels: top-down by height, oblique true colour,

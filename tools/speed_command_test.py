@@ -584,7 +584,7 @@ def main():
     stop(n)
     n.spin(1.5)
 
-    out = a.out or f'/home/roz/speed_cmd_{time.strftime("%Y%m%d_%H%M%S")}.json'
+    out = a.out or f'/home/roz/rover_data/logs/speed_cmd_{time.strftime("%Y%m%d_%H%M%S")}.json'
     rec = dict(commanded=a.speed, reason=reason, samples=n.samples,
                ro_max_thr_speed=RO_MAX_THR_SPEED, ro_speed_p=RO_SPEED_P,
                ro_speed_i=RO_SPEED_I, ro_speed_th=RO_SPEED_TH,

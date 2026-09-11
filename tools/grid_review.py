@@ -29,8 +29,8 @@ WHAT IT CHECKS
     through however pretty the cloud looks.
   * enclosure - whether the free space is bounded by obstacles, or leaks to the edge.
 
-    python3 tools/grid_review.py ~/house_map_v4.db
-    python3 tools/grid_review.py ~/house_map_v4.db --out /tmp/gridcheck
+    python3 tools/grid_review.py ~/rover_data/maps/house_map_v4.db
+    python3 tools/grid_review.py ~/rover_data/maps/house_map_v4.db --out /tmp/gridcheck
 """
 import argparse
 import os

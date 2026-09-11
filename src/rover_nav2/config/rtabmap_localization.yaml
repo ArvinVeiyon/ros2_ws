@@ -38,7 +38,7 @@ rtabmap:
     # uncorrected 19% odom over-report: adjacent keyframes there disagreed by
     # 22 cm and localization jittered 21 deg while parked. Operator-verified:
     # shape, objects and floor all correct, and walls are SINGLE lines.
-    database_path: "/home/roz/house_map_v4.db"
+    database_path: "/home/roz/rover_data/maps/house_map_v4.db"
 
     # LOCALIZATION ONLY - do not add new nodes to the map.
     Mem/IncrementalMemory: "false"
