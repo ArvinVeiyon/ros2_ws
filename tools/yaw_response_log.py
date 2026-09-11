@@ -36,6 +36,15 @@ RD_WHEEL_TRACK = 0.31      # m, read live from the FC 2026-08-01
 RO_MAX_THR_SPEED = 3.0     # m/s, read live from the FC 2026-08-01
 
 
+
+# ESC slot 5 (array index 4) is the RC BRAKE on UAVCAN_EC_FUNC5, added 2026-09-09.
+# It is counted in esc_count and shows in esc_armed_flags, but it NEVER reports
+# online (esc_online_flags stays 15) because a brake output is not a telemetry
+# ESC -- this is what QGC reports as "ESC 5 not connected", and it is EXPECTED.
+# Indexing this array by position therefore picks up a phantom zero-RPM entry.
+# Key on esc_address and drop timestamp == 0, the way wheel_erpm_log.py does.
+DRIVE_ADDRS = (10, 11, 12, 13)   # the four drive ESCs; slot 5 is the brake
+
 class YawLog(Node):
     def __init__(self):
         super().__init__('yaw_response_log')
@@ -87,7 +96,9 @@ class YawLog(Node):
         self.saw_steer = True
 
     def esc_cb(self, msg):
-        self.rpm = [msg.esc[i].esc_rpm for i in range(4)]
+        by_addr = {e.esc_address: e.esc_rpm
+                   for e in list(msg.esc)[:msg.esc_count] if e.timestamp != 0}
+        self.rpm = [by_addr.get(a, 0) for a in DRIVE_ADDRS]
 
     def gyro_cb(self, msg):
         # PX4 body frame is FRD (+z down), ROS is FLU (+z up) -> negate for a ROS-sense yaw rate.

@@ -73,9 +73,15 @@ from sensor_msgs.msg import LaserScan
 
 # Mirrors autonav_mode/include/autonav_mode/mode.hpp -- only used for --overhang.
 FRONT_OVERHANG = 0.337  # m, scan origin -> front bumper (MEASURED 2026-07-28)
-# 2026-08-16: the camera was physically rotated to reach the FC, so this value
-# and everything else camera-referenced is SUSPECT until re-verified. That
-# re-verification is what this tool is for.
+# The 2026-08-16 "the camera was physically rotated" claim was WITHDRAWN 2026-09-04
+# and the mount re-measured 2026-09-09 (pitch 1.436 deg, roll -0.447 deg, 12145
+# samples) -- a normal level mount. Nothing was mounted wrong.
+# 2026-09-11: VERIFIED against a flat wall after launch/depth_to_scan.launch.py was
+# corrected to cam_pitch 0.0251 / cam_roll -0.0078. Operator taped 1.12 m bumper ->
+# wall; /scan read 1.4390 m against 1.4344 predicted by 0.9845 * (1.12 + 0.337) --
+# 4.6 mm on 1.46 m. This constant and the 0.9845 scale BOTH survived the transform
+# change. Do not re-derive them. (autonav_reference.md section 5; memory
+# project_rover_autonav 2026-09-11.)
 
 
 def fit_line(points, tol, iters, rng_seed=12345):
@@ -216,7 +222,7 @@ def main():
     ap.add_argument('--timeout', type=float, default=30.0, help='seconds to wait (default 30)')
     ap.add_argument('--overhang', action='store_true',
                     help='also print bumper clearance using FRONT_OVERHANG '
-                         '(SUSPECT since the 2026-08-16 camera rotation)')
+                         '(verified against tape 2026-09-11)')
     ap.add_argument('--json', action='store_true')
     args = ap.parse_args()
 
@@ -271,7 +277,7 @@ def main():
             if args.overhang:
                 print()
                 print(f'  front_overhang         : {FRONT_OVERHANG:.3f} m  '
-                      f'(SUSPECT since 2026-08-16 -- the camera was rotated)')
+                      f'(tape-verified 2026-09-11, 4.6 mm at 1.46 m)')
                 print(f'  implied bumper clearance: {d_mean - FRONT_OVERHANG:.4f} m')
             print()
             # Judge the run, do not just print it.

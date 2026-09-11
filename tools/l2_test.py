@@ -50,6 +50,15 @@ ARM_WAIT_TIMEOUT = 30.0  # [s] time allowed for the operator to arm via RC
 RESPONSE_RPM = 20     # [rpm] a wheel below this is treated as "did not respond"
 
 
+
+# ESC slot 5 (array index 4) is the RC BRAKE on UAVCAN_EC_FUNC5, added 2026-09-09.
+# It is counted in esc_count and shows in esc_armed_flags, but it NEVER reports
+# online (esc_online_flags stays 15) because a brake output is not a telemetry
+# ESC -- this is what QGC reports as "ESC 5 not connected", and it is EXPECTED.
+# Indexing this array by position therefore picks up a phantom zero-RPM entry.
+# Key on esc_address and drop timestamp == 0, the way wheel_erpm_log.py does.
+DRIVE_ADDRS = (10, 11, 12, 13)   # the four drive ESCs; slot 5 is the brake
+
 class L2(Node):
     def __init__(self):
         super().__init__('l2_test')
@@ -64,7 +73,9 @@ class L2(Node):
 
     def esc_cb(self, msg):
         self.flags = msg.esc_online_flags
-        self.rpm = [msg.esc[i].esc_rpm for i in range(msg.esc_count)]
+        by_addr = {e.esc_address: e.esc_rpm
+                   for e in list(msg.esc)[:msg.esc_count] if e.timestamp != 0}
+        self.rpm = [by_addr.get(a, 0) for a in DRIVE_ADDRS]
 
     def st_cb(self, msg):
         self.nav, self.arm = msg.nav_state, msg.arming_state

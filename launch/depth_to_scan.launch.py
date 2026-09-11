@@ -58,6 +58,20 @@ def generate_launch_description():
     #                   + cable occupy ~0.060 m: at 0.060 the plug would land on the
     #                   plate and the camera would rock on the connector instead of
     #                   sitting flat -- an unmeasurable pitch error, plus cable strain.
+    #   pitch/roll   -- ⚠️ RE-MEASURED 2026-09-10, and the 07-27 values below are STALE.
+    #                   tools/cam_mount_probe.py, 12145 samples of /camera/accel/sample,
+    #                   rover on flat level floor, still: optical mean
+    #                   (x +0.0763, y -9.7735, z -0.2450), sd <= 0.006, |g| 9.7769.
+    #                   Up-vector in link coords (-0.0251, -0.0078, +0.9997)
+    #                   => pitch +0.0251 rad (1.436 deg NOSE DOWN),
+    #                      roll  -0.0078 rad (-0.447 deg, RIGHT side up).
+    #                   Deltas from the 07-27 figures: pitch -0.89 deg, roll -1.02 deg.
+    #                   ⛔ THE CAMERA IS NOT MISMOUNTED AND NEVER WAS -- the operator has
+    #                   said so repeatedly and he is right. It came off and went back on
+    #                   the top plate, and the remount landed ~1 deg different. That is
+    #                   ordinary variation. What was wrong is THIS FILE, which was never
+    #                   updated afterwards. Do not re-raise "the camera is rotated".
+    #                   Historical, for comparison only:
     #   pitch/roll   -- MEASURED 2026-07-27 after the remount, rover on flat floor,
     #                   mount flat. 4561 samples of /camera/accel/sample at rest:
     #                   mean (x -0.098, y -9.765, z -0.397), |g| 9.774 vs 9.81,
@@ -82,8 +96,8 @@ def generate_launch_description():
         DeclareLaunchArgument('cam_y', default_value='0.00'),
         DeclareLaunchArgument('cam_z', default_value='0.305'),
         DeclareLaunchArgument('cam_yaw', default_value='0.0'),
-        DeclareLaunchArgument('cam_pitch', default_value='0.0406'),
-        DeclareLaunchArgument('cam_roll', default_value='0.0100'),
+        DeclareLaunchArgument('cam_pitch', default_value='0.0251'),   # 2026-09-10, was 0.0406
+        DeclareLaunchArgument('cam_roll', default_value='-0.0078'),   # 2026-09-10, was 0.0100
     ]
 
     base_to_camera = Node(
