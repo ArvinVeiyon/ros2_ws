@@ -52,7 +52,9 @@ BE = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
 # Must match config/rover_odometry.yaml.
 LEFT_ADDRS = {11, 13}
 RIGHT_ADDRS = {10, 12}
-SIGN = {10: -1.0, 11: 1.0, 12: 1.0, 13: 1.0}
+# 🔴 addr 10 un-inverted 2026-09-12 -- see wheel_odometry_node.py. Measured both
+# directions on stands: all four ESCs report signed ERPM on ONE convention.
+SIGN = {10: 1.0, 11: 1.0, 12: 1.0, 13: 1.0}
 DEADBAND = 40.0
 # The node's ACTUAL parameter (wheel_odometry_node.py:116). Was 0.000380 here
 # until 2026-08-13 -- a stale copy of a value corrected in the config back on

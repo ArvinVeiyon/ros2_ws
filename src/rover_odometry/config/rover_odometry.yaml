@@ -10,7 +10,14 @@ wheel_odometry_node:
     left_addresses: [11, 13]
     right_addresses: [10, 12]
     wheel_addresses: [10, 11, 12, 13]
-    wheel_signs: [-1.0, 1.0, 1.0, 1.0]   # only addr 10 reports inverted ERPM
+    # 🔴 CHANGED 2026-09-12: was [-1.0, 1.0, 1.0, 1.0] ("only addr 10 reports
+    # inverted ERPM"). That is no longer true and the inversion was HALVING /odom.
+    # Measured on stands in both directions, 38,396 samples: forward, all four
+    # addresses report POSITIVE raw ERPM; reverse, all four go NEGATIVE together.
+    # Operator confirmed visually that all four wheels turn together both ways.
+    # Under the old map the right side averaged (-1487 + 1532)/2 ~ 9 ERPM instead
+    # of ~1500, so it cancelled itself. Full numbers → memory/project_rover_autonav.
+    wheel_signs: [1.0, 1.0, 1.0, 1.0]
 
     # MEASURED 2026-08-01 — was 0.000380, which was ~12.2x TOO SMALL.
     #

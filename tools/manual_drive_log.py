@@ -18,7 +18,11 @@ PX4_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                      durability=DurabilityPolicy.TRANSIENT_LOCAL,
                      history=HistoryPolicy.KEEP_LAST, depth=5)
 
-SIGN = {10: -1.0, 11: 1.0, 12: 1.0, 13: 1.0}   # addr 10 reports inverted ERPM
+# 🔴 CORRECTED 2026-09-12: addr 10 does NOT report inverted ERPM. This file was
+# the origin of that claim and every other tool copied it from here. Measured on
+# stands in both directions, 38,396 samples: forward all four positive, reverse
+# all four negative together, operator confirming the wheels visually.
+SIGN = {10: 1.0, 11: 1.0, 12: 1.0, 13: 1.0}
 LEFT, RIGHT = {11, 13}, {10, 12}
 # MUST match wheel_odometry_node's `erpm_to_ms` parameter (0.003900), or every
 # m/s this tool prints is wrong. It read 0.000380 until 2026-08-13, which made

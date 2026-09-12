@@ -73,8 +73,11 @@ PX4_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                      durability=DurabilityPolicy.TRANSIENT_LOCAL,
                      history=HistoryPolicy.KEEP_LAST, depth=5)
 
-# addr 10 reports inverted ERPM (manual_drive_log.py, l2_floortest_wheel0_reversed)
-SIGN = {10: -1.0, 11: 1.0, 12: 1.0, 13: 1.0}
+# 🔴 addr 10 is NOT inverted -- corrected 2026-09-12 to match the node. Measured
+# on stands in both directions, 38,396 samples: forward all four report POSITIVE
+# raw ERPM, reverse all four go NEGATIVE together. The old -1.0 made the right
+# side average (-1487 + 1532)/2 ~ 9 instead of ~1500, halving every speed here.
+SIGN = {10: 1.0, 11: 1.0, 12: 1.0, 13: 1.0}
 LEFT_ADDRS, RIGHT_ADDRS = {11, 13}, {10, 12}
 
 NODE_DEADBAND = 5.0     # wheel_odometry_node.py:121 -- PER WHEEL, before averaging

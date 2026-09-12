@@ -107,7 +107,23 @@ class WheelOdometryNode(Node):
         self.declare_parameter('left_addresses', [11, 13])
         self.declare_parameter('right_addresses', [10, 12])
         self.declare_parameter('wheel_addresses', [10, 11, 12, 13])
-        self.declare_parameter('wheel_signs', [-1.0, 1.0, 1.0, 1.0])
+        # -1.0 -> 1.0 on addr 10, 2026-09-12. MEASURED on stands, both directions,
+        # 38,396 samples: driving FORWARD every address reported POSITIVE raw ERPM
+        # (addr 10: 11,410 positive vs 43 negative); in REVERSE every address went
+        # NEGATIVE together (addr 10: 5,001 negative vs 33). The operator confirmed
+        # by eye that all four wheels turn the same way in both directions. So all
+        # four ESCs report SIGNED ERPM on one convention and addr 10 is not special.
+        # With the old -1.0 the right side computed as (-1487 + 1532)/2 ~ 9 ERPM
+        # instead of ~1500 -- it cancelled itself, and /odom published about HALF
+        # the true speed, which the EKF bridge then handed to PX4.
+        # ⚠️ This was NOT the state when erpm_to_ms was tape-fitted: had the right
+        # side been cancelling then, the constant would have had to come out near
+        # 0.0085 to match tape, and it is 0.0039 (geometry gives ~0.0042 per wheel).
+        # So the map was correct in August and broke later; the 2026-09-09 reflash
+        # of all four VESCs is the likeliest trigger, but that is not proven.
+        # 🔑 /odom now reports ~2x what it did before this change. RE-VALIDATE
+        # AGAINST TAPE on the floor before trusting it in any armed run.
+        self.declare_parameter('wheel_signs', [1.0, 1.0, 1.0, 1.0])
         # 0.004633 -> 0.003900 on 2026-08-09 (divide by 1.188). The old value was
         # the slip-free ERPM->wheel-rotation figure from a hand push; odometry needs
         # ERPM->GROUND distance, and powered runs slip by a measured 18.8% (5 wall-
