@@ -56,6 +56,37 @@ FRONT_OVERHANG = 0.337                # m, bumper ahead of the scan origin
 SCAN_SCALE = 0.9845                   # /scan reads SHORT; verified at a wall 09-11
 
 # --------------------------------------------------------------------------
+# Physical dimensions -- from autonav_reference.md §4, which is the canonical
+# table. ⛔ ITS OWN RULE: "Never derive a dimension — look it up." Two shipped
+# bugs already came from assumed geometry (the wheelbase used as the track,
+# under-reporting every yaw rate by 28%; and a footprint built from a guess).
+# --------------------------------------------------------------------------
+
+DIMENSIONS = {
+    # name:            (value_m, provenance)
+    'plate_length':    (0.730, 'autonav_reference §4 — longest extent, THE footprint'),
+    'plate_width':     (0.450, 'autonav_reference §4 — wheels sit INBOARD of the plate'),
+    'ground_to_plate': (0.235, 'autonav_reference §4'),
+    'track':           (0.310, 'tape 2026-07-21, hub to hub — ⚠️ NOT the widest extent'),
+    'wheelbase':       (0.430, '⚠️ NEVER use as track — that bug shipped once already'),
+    'centre_to_tip':   (0.345, 'rotation centre to front plate tip; defines base_link'),
+    'front_overhang':  (0.337, 'scan origin to bumper; confirmed to 2 mm by the tape fit'),
+    'cam_z':           (0.305, '0.235 plate + 0.070 bracket'),
+    'wheel_diameter':  (0.1524, '6 inch. ⛔ the VESC config says 0.083 and is WRONG — '
+                                'documented as ignore-do-not-fix'),
+}
+
+# 🔴 OPEN CONTRADICTION, 2026-09-12. Four prose sources say the rover is
+# 0.73 x 0.56 m: rover_autonav_requirements.md:69, MEMORY.md, todos.md:554 and
+# project_rover_autonav.md:308. Every machine-readable source says 0.450 wide —
+# both Nav2 footprints (±0.225) and the reflex's footprint_half_width. The width
+# is used in the "room is too small" argument, so it is not cosmetic.
+# ⛔ UNRESOLVED UNTIL SOMEONE TAPES THE WIDEST POINT. Do not silently pick one.
+DISPUTED_WIDTH = (0.450, 0.560)
+
+NAV2_FOOTPRINT = [(0.345, 0.225), (0.345, -0.225), (-0.385, -0.225), (-0.385, 0.225)]
+
+# --------------------------------------------------------------------------
 # QoS
 # --------------------------------------------------------------------------
 

@@ -202,6 +202,9 @@ NEEDS = {
     'coast': [R_ESC, R_SCAN, R_STATUS],
     'brake': [R_ESC, R_SCAN, R_STATUS],
     'ladder': [R_ESC, R_SCAN, R_STATUS, R_ODOM],
+    'range': [R_ESC, R_STATUS],
+    'wheelmap': [R_ESC],          # hand-spun: no arming, no /scan, no runway
+    'dimensions': [],             # reads declared constants only
 }
 
 
@@ -448,8 +451,199 @@ def an_ladder(d):
                 'too — do not apply.'])
 
 
+def an_range(d):
+    """Throttle OUTPUT range: where does it start biting, where does it stop growing?
+
+    This is the rover equivalent of the drone's idle/min/max actuator setup,
+    which QGC does not offer for rovers. It is about the OUTPUT SCALING
+    (UAVCAN_EC_MIN/MAX), not about speed.
+
+    🔑 UAVCAN_EC_MIN1..4 = 110 and MAX = 8082 ARE DELIBERATE. ⛔ Never "tidy"
+    them back to 10/8191 — a raw command of 10 is dead full-reverse on these
+    ESCs. This routine reports what the configured range actually buys; it does
+    not propose changing MIN/MAX.
+    """
+    segs = rd.steady_segments(d['samples'], 'throttle', 0.02, 0.8)
+    rows = []
+    for seg in segs:
+        thr = sum(s['throttle'] for s in seg) / len(seg)
+        mags = [sum(abs(r) for r in s['rpm'].values()) / len(s['rpm']) for s in seg]
+        amps = [c for s in seg for c in s['current'].values()]
+        if not rd.is_settled(mags, amps):
+            continue
+        signed = [sum(s['rpm'].values()) / len(s['rpm']) for s in seg]
+        rows.append((thr, sum(mags) / len(mags), sum(amps) / len(amps),
+                     sum(signed) / len(signed)))
+    if not rows:
+        print('\n  no held levels — hold each step still for at least a second')
+        return
+
+    rows.sort()
+    print(f'\n{"stick":>7} {"ERPM":>8} {"A":>7}  note')
+    for thr, mag, amp, signed in rows:
+        note = ''
+        if mag <= 30:
+            note = 'no motion (inside the deadband)'
+        elif thr > 0 and signed < 0:
+            note = '🔴 FORWARD STICK, REVERSE ROTATION'
+        elif thr < 0 and signed > 0:
+            note = '🔴 REVERSE STICK, FORWARD ROTATION'
+        print(f'{thr:+7.3f} {mag:8.0f} {amp:7.2f}  {note}')
+
+    driving = [r for r in rows if r[1] > 30]
+    if not driving:
+        print('\n  nothing ever drove — push further.')
+        return
+    idle = min(abs(r[0]) for r in driving)
+    top = max(driving, key=lambda r: r[1])
+    near_top = [r for r in driving if r[1] > 0.97 * top[1]]
+    saturates_at = min(abs(r[0]) for r in near_top)
+
+    print(f'\n  idle / bite point : {idle:.3f} stick — below this, no motion')
+    print(f'  peak ERPM         : {top[1]:.0f} at {top[0]:+.3f} stick')
+    print(f'  saturates from    : {saturates_at:.3f} stick '
+          f'(within 3% of peak from here up)')
+    usable = max(0.0, 1.0 - idle)
+    print(f'  usable span       : {idle:.3f} .. 1.000  ({usable * 100:.0f}% of travel)')
+
+    if saturates_at < 0.5 * max(abs(r[0]) for r in driving):
+        print('\n🔴 IT SATURATES IN THE LOWER HALF OF THE STICK.')
+        print('   Wheels-up that is expected and means nothing — a torque command '
+              'with no load')
+        print('   runs to the same ceiling whatever you ask for. LOADED, on the '
+              'floor, it would')
+        print('   instead mean the output range is compressed and most of your '
+              'stick does nothing.')
+    print('\n  ⛔ UAVCAN_EC_MIN1..4=110 / MAX1..4=8082 are DELIBERATE. '
+          'Never reset them to 10/8191 —')
+    print('     a raw command of 10 is dead full-reverse. Nothing here suggests '
+          'changing them.')
+
+
+def an_wheelmap(d):
+    """Which ESC address is which physical corner — verified by HAND, not by command.
+
+    🔑 WHY THIS EXISTS. QGC can spin a drone's motors one at a time to identify
+    them; it offers nothing equivalent for a rover. The address-to-corner map
+    (10=RF 11=FL 12=RR 13=RL) comes from three paper sources that agree with
+    each other, and has NEVER been confirmed against the physical vehicle.
+
+    ⛔ AND IT IS DONE BY HAND ON PURPOSE. PX4 can drive one output at a time via
+    actuator test, but that commands a live motor from a laptop. Spinning a
+    raised wheel by hand proves the same thing, cannot run away, and needs no
+    arming. It also reveals each wheel's SIGN, which is what went stale and
+    halved /odom.
+    """
+    events = []
+    for s in d['samples']:
+        for addr, rpm in s['rpm'].items():
+            if abs(rpm) > 25:
+                events.append((s['t'], addr, rpm))
+    if not events:
+        print('\n  no wheel movement detected at all — spin each wheel firmly.')
+        return
+
+    t0 = events[0][0]
+    groups, cur = [], [events[0]]
+    for e in events[1:]:
+        if e[0] - cur[-1][0] > 2.0:          # a gap = the next wheel
+            groups.append(cur)
+            cur = [e]
+        else:
+            cur.append(e)
+    groups.append(cur)
+
+    print(f'\n  {len(groups)} spin episodes detected\n')
+    print(f'{"#":>3} {"start":>7} {"addr":>5} {"peak":>7} {"direction":>10}  share')
+    for i, g in enumerate(groups, 1):
+        by_addr = {}
+        for t, addr, rpm in g:
+            by_addr.setdefault(addr, []).append(rpm)
+        total = sum(len(v) for v in by_addr.values())
+        main = max(by_addr, key=lambda a: len(by_addr[a]))
+        peak = max(by_addr[main], key=abs)
+        share = len(by_addr[main]) / total
+        direction = 'forward' if peak > 0 else 'REVERSE'
+        print(f'{i:>3} {g[0][0]-t0:7.1f} {main:5d} {peak:+7.0f} {direction:>10}  '
+              f'{share:.0%}')
+        if share < 0.8:
+            others = ', '.join(str(a) for a in by_addr if a != main)
+            print(f'      ⚠️ addresses {others} also moved — belt drag, or two '
+                  f'wheels spun at once.')
+            print('         Spin ONE wheel at a time, and let the others stop '
+                  'fully between.')
+
+    seen = [max(((a, len(v)) for a, v in
+                 {addr: [r for _, ad, r in g if ad == addr]
+                  for addr in {ad for _, ad, _ in g}}.items()),
+                key=lambda x: x[1])[0] for g in groups]
+    print(f'\n  order observed: {seen}')
+    print('  🔑 Compare against the order you spun them in. The configured map is')
+    print('     10=RF  11=FL  12=RR  13=RL  (MOTOR_MAP.md — paper only, never '
+          'verified on the vehicle).')
+    print('  ⛔ If an address reports REVERSE while you spun it forward, that is a '
+          'SIGN problem,')
+    print('     not a mapping problem — and it is the failure that halved /odom '
+          'until 2026-09-12.')
+
+
+def an_dimensions(_):
+    """Cross-check the declared dimensions against each other. Reads files only.
+
+    It cannot measure the rover. What it can do is catch the constants
+    disagreeing, which is exactly how 0.450 and 0.560 both came to be quoted as
+    the vehicle's width.
+    """
+    print('\n  CANONICAL (autonav_reference.md §4)\n')
+    for name, (val, why) in rd.DIMENSIONS.items():
+        print(f'  {name:18s} {val:7.4f} m   {why}')
+
+    xs = [p[0] for p in rd.NAV2_FOOTPRINT]
+    ys = [p[1] for p in rd.NAV2_FOOTPRINT]
+    nav_len, nav_wid = max(xs) - min(xs), max(ys) - min(ys)
+    print(f'\n  NAV2 FOOTPRINT     {nav_len:.3f} x {nav_wid:.3f} m  '
+          f'(front {max(xs):.3f}, rear {min(xs):.3f})')
+
+    ok = True
+    for label, nav, key in (('length', nav_len, 'plate_length'),
+                            ('width', nav_wid, 'plate_width')):
+        ref = rd.DIMENSIONS[key][0]
+        if abs(nav - ref) > 0.005:
+            ok = False
+            print(f'  🔴 {label}: Nav2 {nav:.3f} vs reference {ref:.3f} — DISAGREE')
+        else:
+            print(f'  ✅ {label}: Nav2 agrees with the reference table')
+
+    front_ref = rd.DIMENSIONS['centre_to_tip'][0]
+    if abs(max(xs) - front_ref) > 0.005:
+        ok = False
+        print(f'  🔴 front extent: Nav2 {max(xs):.3f} vs centre_to_tip '
+              f'{front_ref:.3f} — DISAGREE')
+    else:
+        print('  ✅ front extent matches centre_to_tip')
+
+    lo, hi = rd.DISPUTED_WIDTH
+    print(f'\n  🔴 OPEN: THE WIDTH IS DISPUTED — {lo:.3f} vs {hi:.3f} m')
+    print('     Machine-readable sources all say 0.450: both Nav2 footprints and '
+          'the reflex')
+    print('     footprint_half_width 0.225. Four prose sources say 0.560 — '
+          'requirements §,')
+    print('     MEMORY.md, todos.md and project_rover_autonav.')
+    print(f'     Footprint area: {rd.DIMENSIONS["plate_length"][0] * lo:.3f} m² '
+          f'against {rd.DIMENSIONS["plate_length"][0] * hi:.3f} m², and the width '
+          'feeds the')
+    print('     "room is too small" argument, so it is not cosmetic.')
+    print('     ⏭ TAPE THE WIDEST POINT. ⛔ Do not pick one from the documents —')
+    print('        the manual\'s own rule is "never derive a dimension, look it '
+          'up", and two')
+    print('        bugs have already shipped from assumed geometry on this vehicle.')
+    print(f'\n  {"✅ no other contradiction found." if ok else "🔴 fix the above."}')
+
+
 ANALYSERS = {'scale': an_scale, 'deadband': an_deadband, 'dropout': an_dropout,
-             'coast': an_coast, 'brake': an_brake, 'ladder': an_ladder}
+             'coast': an_coast, 'brake': an_brake, 'ladder': an_ladder,
+             'range': an_range, 'wheelmap': an_wheelmap,
+             'dimensions': an_dimensions}
 
 BANNERS = {
     'scale': 'Park facing a FLAT WALL with 2 m clear. Drive straight at it for '
@@ -464,6 +658,11 @@ BANNERS = {
              'hold it until fully stopped.',
     'ladder': 'Hold each level 2 s, return to centre, step up: about 0.15, 0.25, '
               '0.40, 0.60, then full if the runway allows.',
+    'range': 'Step the stick from centre to full in about 8 even steps, holding '
+             'each for 1 s. Then do the same in reverse.',
+    'wheelmap': 'WHEELS UP, DISARMED. Spin ONE wheel at a time BY HAND, forwards, '
+                'for ~3 s each: front-left, front-right, rear-left, rear-right. '
+                'Leave a clear pause between wheels and let each stop fully.',
 }
 
 
@@ -476,6 +675,11 @@ def main():
     ap.add_argument('--skip-preflight', action='store_true',
                     help='⛔ only when the chain was just verified')
     a = ap.parse_args()
+
+    if a.routine == 'dimensions':
+        # Nothing to record: this one reads declared constants, not the vehicle.
+        an_dimensions(None)
+        return
 
     if a.analyse:
         ANALYSERS[a.routine](load(a.analyse))
