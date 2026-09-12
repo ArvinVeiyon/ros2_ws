@@ -623,20 +623,33 @@ def an_dimensions(_):
         print('  ✅ front extent matches centre_to_tip')
 
     lo, hi = rd.DISPUTED_WIDTH
-    print(f'\n  🔴 OPEN: THE WIDTH IS DISPUTED — {lo:.3f} vs {hi:.3f} m')
-    print('     Machine-readable sources all say 0.450: both Nav2 footprints and '
-          'the reflex')
-    print('     footprint_half_width 0.225. Four prose sources say 0.560 — '
-          'requirements §,')
-    print('     MEMORY.md, todos.md and project_rover_autonav.')
-    print(f'     Footprint area: {rd.DIMENSIONS["plate_length"][0] * lo:.3f} m² '
-          f'against {rd.DIMENSIONS["plate_length"][0] * hi:.3f} m², and the width '
-          'feeds the')
-    print('     "room is too small" argument, so it is not cosmetic.')
-    print('     ⏭ TAPE THE WIDEST POINT. ⛔ Do not pick one from the documents —')
-    print('        the manual\'s own rule is "never derive a dimension, look it '
-          'up", and two')
-    print('        bugs have already shipped from assumed geometry on this vehicle.')
+    length = rd.DIMENSIONS['plate_length'][0]
+    print(f'\n  ⚠️ WIDTH — TWO FIGURES EXIST: {lo:.3f} vs {hi:.3f} m  (traced 2026-09-12)')
+    print(f'     {lo:.3f} — AutoNav Technical Reference §4 (artifact bc09dd55, '
+          'rev 08-09), the same')
+    print('            table in autonav_reference.md, BOTH Nav2 footprints '
+          '(±0.225), the reflex')
+    print('            footprint_half_width 0.225, and corridor half-width 0.275 '
+          '= 0.225 + 50 mm.')
+    print('            That reference states the wheels sit INBOARD of the plate.')
+    print(f'     {hi:.3f} — the Solar-Farm Inspection UGV price quotation '
+          '(artifact a1f7eb07, Rev 8),')
+    print('            "Footprint 730 x 560 mm" — a COMMERCIAL spec, plus the '
+          'four docs that')
+    print('            copied it: requirements §, MEMORY.md, todos.md, '
+          'project_rover_autonav.')
+    print(f'     Footprint area: {length * lo:.3f} m² against {length * hi:.3f} m².')
+    print('  🔑 The safety code already uses 0.450, so there is NO GAP unless a '
+          'tape disagrees.')
+    print('  ⏭ Two tape numbers would close it: the plate edge-to-edge, and the '
+          'widest point of')
+    print('     the whole vehicle. If anything protrudes, THAT is the number Nav2 '
+          'and the reflex')
+    print('     need. ⛔ Do not resolve it by counting documents — the manual\'s '
+          'own rule is')
+    print('     "never derive a dimension, look it up", and two bugs have already '
+          'shipped here')
+    print('     from assumed geometry.')
     print(f'\n  {"✅ no other contradiction found." if ok else "🔴 fix the above."}')
 
 

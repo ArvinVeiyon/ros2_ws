@@ -76,12 +76,21 @@ DIMENSIONS = {
                                 'documented as ignore-do-not-fix'),
 }
 
-# 🔴 OPEN CONTRADICTION, 2026-09-12. Four prose sources say the rover is
-# 0.73 x 0.56 m: rover_autonav_requirements.md:69, MEMORY.md, todos.md:554 and
-# project_rover_autonav.md:308. Every machine-readable source says 0.450 wide —
-# both Nav2 footprints (±0.225) and the reflex's footprint_half_width. The width
-# is used in the "room is too small" argument, so it is not cosmetic.
-# ⛔ UNRESOLVED UNTIL SOMEONE TAPES THE WIDEST POINT. Do not silently pick one.
+# ⚠️ WIDTH — TRACED 2026-09-12, and it is 5 engineering sources against 1
+# commercial one. 0.450 is carried by: the AutoNav Technical Reference artifact
+# §4 (bc09dd55, rev 08-09, which states "wheels sit INBOARD of the plate" and
+# calls the plate "the widest and longest extent"), autonav_reference.md §4 in
+# the repo (an identical table), both Nav2 footprints (±0.225), the reflex's
+# footprint_half_width 0.225, and the corridor half-width 0.275 derived as
+# 0.225 + 50 mm. 0.560 appears in ONE place and its copies: the Solar-Farm
+# Inspection UGV price quotation (artifact a1f7eb07, Rev 8, 2026-09-10),
+# "Footprint 730 x 560 mm" — a commercial spec, quite possibly a product
+# envelope rather than this plate. rover_autonav_requirements.md:69, MEMORY.md,
+# todos.md:554 and project_rover_autonav.md:308 all repeat that figure.
+# 🔑 The safety code already uses 0.450, so there is NO gap unless a tape says
+# otherwise. ⏭ Still worth two tape numbers — the plate edge-to-edge, and the
+# widest point of the whole vehicle — because if anything protrudes, THAT is
+# what Nav2 and the reflex need. ⛔ Do not resolve it by counting documents.
 DISPUTED_WIDTH = (0.450, 0.560)
 
 NAV2_FOOTPRINT = [(0.345, 0.225), (0.345, -0.225), (-0.385, -0.225), (-0.385, 0.225)]
