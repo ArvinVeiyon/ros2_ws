@@ -237,14 +237,78 @@ def an_scale(d):
     if len(seg) < 20:
         print('not enough armed samples with /scan — drive AT a flat wall')
         return
-    moving = [s for s in seg
-              if sum(abs(r) for r in s['rpm'].values()) / len(s['rpm']) > 30]
-    if len(moving) < 10:
+    # ⛔ SCORE ONE BURST, NOT THE WHOLE FILE. A session normally contains a run
+    # out and a drive back to the start; first-to-last then cancels the /scan
+    # travel to ~0 while the ERPM integral keeps adding, which on 2026-09-12
+    # produced "scan -0.006 m, erpm 15.281 m" from a run that was actually clean.
+    # Segments are split on pauses and the LONGEST single approach is scored.
+    bursts, cur = [], []
+    for s in seg:
+        moving = sum(abs(r) for r in s['rpm'].values()) / len(s['rpm']) > 30
+        if moving:
+            cur.append(s)
+        else:
+            if len(cur) >= 5:
+                bursts.append(cur)
+            cur = []
+    if len(cur) >= 5:
+        bursts.append(cur)
+    if not bursts:
         print('the wheels never turned — nothing to scale')
         return
 
+    def travel(b):
+        return (b[0]['scan_min'] - b[-1]['scan_min']) * rd.SCAN_SCALE
+
+    # The best burst is the longest APPROACH: /scan must shrink, so the camera
+    # is closing on the surface it is ranging.
+    approaches = [b for b in bursts if travel(b) > 0.05]
+    if not approaches:
+        print(f'\n  {len(bursts)} burst(s), none of them an approach.')
+        print('  /scan has to SHRINK for this to work — drive TOWARDS the wall, '
+              'not away from it.')
+        return
+    moving = max(approaches, key=travel)
+    if len(bursts) > 1:
+        print(f'\n  {len(bursts)} bursts in this file; scoring the longest '
+              f'approach only ({travel(moving):.2f} m).')
+
+    # 🔴 THE RULER HAS TO BE TRACKING BEFORE IT CAN RULE. On 2026-09-12 the first
+    # 1.9 s of a clean burst showed /scan FLAT at ~3.8 m (drifting UP, even) while
+    # the wheels integrated 1.7 m: at that range the 0.275 m corridor subtends
+    # only ±4 deg, and the far wall was at the edge of the 5 m limit, so the
+    # sector minimum was a marginal return that did not follow the rover. Scoring
+    # that window in charged the wheels for distance the ruler never saw and gave
+    # a 36% error where the tracking window gives 8%.
+    # Walk BACK from the end while /scan keeps closing. The moment it stops
+    # falling for a sustained stretch, the ruler was not tracking before that,
+    # and everything earlier is discarded.
+    STALL = 0.30            # [s] of no net closing = the ruler was not tracking
+    start = 0
+    for i in range(len(moving) - 1, 0, -1):
+        j = i
+        while j > 0 and moving[i]['t'] - moving[j]['t'] < STALL:
+            j -= 1
+        if moving[j]['scan_min'] - moving[i]['scan_min'] <= 0.01:
+            start = i
+            break
+    dropped = start
+    moving = moving[start:]
+    if len(moving) < 5:
+        print('\n  the tracking window is too short to score.')
+        return
+    if dropped:
+        print(f'\n  ⚠️ dropped the first {dropped} samples: /scan was NOT '
+              f'tracking yet (flat near {moving[0]["scan_min"]:.2f} m — at that '
+              'range the')
+        print('     0.275 m corridor subtends only a few degrees and the wall '
+              'sits at the edge of')
+        print('     the 5 m limit, so the sector minimum does not follow the '
+              'rover). Scoring only')
+        print('     the window where the ruler was actually closing.')
+
     first, last = moving[0], moving[-1]
-    scan_travel = (first['scan_min'] - last['scan_min']) * rd.SCAN_SCALE
+    scan_travel = travel(moving)
     odo = 0.0
     for a, b in zip(moving, moving[1:]):
         v = rd.linear_speed(a['rpm'])
@@ -348,17 +412,33 @@ def _decel(d, label):
     A deceleration must be fitted over a span, and the span must be long enough
     that noise cannot dominate it.
     """
-    runs, cur = [], []
+    # ⚠️ ERPM IS QUANTISED AND NOISY AT ~100 Hz, so a decelerating run contains
+    # small upward blips. Requiring every sample to be slower than the last
+    # breaks the run on the first blip: a real 1.6 m/s^2 brake was truncated at
+    # 0.57 m/s and scored 0.60 on 2026-09-12. Track the minimum reached and
+    # allow this much noise above it.
+    NOISE = 0.08                          # [m/s]
+    runs, cur, floor = [], [], None
     for s in d['samples']:
         v = rd.linear_speed(s['rpm'])
         if v is None:
             continue
-        if cur and v < cur[-1][1] + 0.01 and v > 0.05:
+        if cur:
+            floor = min(floor, v)
+        # ⛔ STOP THE RUN AT REST. A stationary tail satisfies "slower than the
+        # last sample" forever (0 < 0 + 0.01), so the run used to swallow the
+        # zeros and the fit was dragged down by a segment that was mostly flat:
+        # a real 1.6 m/s^2 brake scored 0.60 on 2026-09-12. Once it is stopped,
+        # the deceleration is over.
+        if cur and v <= floor + NOISE and v > 0.05:
             cur.append((s['t'], v))
         else:
+            if v <= 0.05 and cur:
+                cur.append((s['t'], v))       # keep the one sample AT rest
             if len(cur) > 3 and cur[-1][0] - cur[0][0] >= MIN_DECEL_SPAN:
                 runs.append(cur)
             cur = [(s['t'], v)] if v > 0.15 else []
+            floor = v if cur else None
     if len(cur) > 3 and cur[-1][0] - cur[0][0] >= MIN_DECEL_SPAN:
         runs.append(cur)
 
