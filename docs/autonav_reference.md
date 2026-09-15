@@ -491,7 +491,7 @@ Safety tests gate capability tests. **Pass criteria, not opinions.**
 | **S2b** | Camera loss (`rover-camera` killed) | Forward blocked; heading loss handled | ⬜ untested — harsher than S2: loses `/scan` **and** the heading gyro together, a risk created by making heading depend on the camera (§6) |
 | **S3** | Yaw loop diagnosis | Open vs closed loop | ✅ solved — friction deadband + windup |
 | **T1** | Speed tracking, 5 s at 0.2 m/s | Sustained `/odom` within ±20% | ✅ validated |
-| **T2** | Straight goal, clear 2 m corridor | Arrives within 0.20 m, no collision stop | ⬜ not run |
+| **T2** | Straight goal, clear 2 m corridor | Arrives within 0.20 m, no collision stop | ✅ **PASSED 2026-09-15/16, n=3, TAPE-ADJUDICATED** — corridor venue, `tools/t2_straight_goal_test.py`, armed AutoNav (`nav_state=23`). Taped arrival **2.130 / 2.025 / 2.000 m** against a 2.0 m goal at **0.15 / 0.25 / 0.75 m/s** ⇒ error **+0.130 / +0.025 / 0.000 m**, all inside ±0.20 m. **Reflex silent on all three.** Tracking: lateral **+0.033 / +0.036 / +0.023 m**, yaw **+2.08 / +2.02 / +1.56°**. 🔑 Accuracy IMPROVES with speed. ⚠️ The 0.75 m/s run exceeded the §13 speed permission — see there |
 | **T3** | One offset obstacle | Routes around, keeps inflation clearance | ⬜ not run |
 | **T4** | Fully blocked corridor | Stops cleanly, reports failure, **does not spin or reverse** | ⬜ not run |
 | **T5** | Dynamic obstacle | Stops before contact | ⬜ not run |
@@ -576,6 +576,48 @@ on sensor loss the wheels stop, with a decision latency of 509/514 ms against a 
 ≥300 mm standoff is unmeasured at current parameters, and the derived figures put it at risk somewhere
 near 0.2–0.25 m/s. Run `tools/collision_standoff_test.py` before any speed increase.
 Also not permitted: anything depending on a localization number, until localization is measured.
+
+### ⚠️ 2026-09-15/16 — T2 PASSED n=3, AND THE SPEED BOUND ABOVE WAS EXCEEDED. READ BOTH FACTS.
+
+T2 passed three times (§12), the last run at **0.75 m/s** — roughly **3×** the 0.2–0.25 m/s ceiling
+this section sets, and **`collision_standoff_test.py` was NOT re-run first**, as the paragraph above
+requires. Operator-directed, after the constraint was stated. Recording it so the ladder is not read
+as evidence the bound was cleared:
+
+🔴 **THE ≥300 mm STANDOFF IS STILL UNMEASURED ABOVE ~0.11 m/s.** T2 does not test it — T2 drives at
+*nothing*, and on all three runs **the reflex never fired, so it was never exercised.** A silent
+reflex on a clear corridor is the T2 pass criterion; it is **not** evidence the reflex works at speed.
+⇒ **Still run `collision_standoff_test.py` before relying on the reflex above crawl.**
+
+🔴 **AND THE STOP DISTANCE AT `RO_DECEL_LIM`=5 REMAINS UNMEASURED** — the 09-14 open item. Three
+full-rate runs (~26,000 `esc_status` samples at ~97 Hz) scored **0 stop events**, twice for want of
+speed and once because `brake_fullrate.py` arms on *mean* wheel speed **>300 rpm** and 0.75 m/s only
+reaches ~270. 🔑🔑 **AND WHEEL RPM CANNOT MEASURE IT ANYWAY** — see §13b. The reflex's 0.69 m
+clearance is still sized against a 0.19 m stop measured at `RO_DECEL_LIM` **−1**, not the 5 in force.
+
+### 🔴🔴 13b. THE END-OF-STOP SPEED SIGNAL IS NON-PHYSICAL — DO NOT DERIVE DECELERATION FROM IT
+
+Full-rate floor capture, 0.75 m/s, `codex-work/bldc_can/evidence/t2_run4_075ms_20260916.csv`:
+
+```
+  t        FR            FL            RR            RL
+23.546   167|+3.09    172|+4.61     87|+2.14    164|-2.96   <- RR at HALF, others steady
+23.644   107|+19.69   114|+18.69    63|+17.00    23|+11.16
+23.687     0|+14.78    39|+21.34    14|+14.20    29|+14.05
+23.706     0|+13.38     1|+12.13    55|+10.54    87|+6.31   <- RL 29 -> 87 rpm in 30 ms
+```
+
+**Wheels do not go 8 → 93 rpm in 30 ms on a decelerating rover.** A deceleration fitted to this
+moved between **0.30 and 4.97 m/s²** purely with the choice of start threshold — that spread is the
+tell, and it is why no figure from this run is quoted anywhere. ⛔ **Never derive a stop distance,
+a deceleration or a reflex clearance from wheel rpm through the stop.** It needs an independent
+ruler (`/scan` against a wall, or tape).
+
+🔑 **What the trace DOES show is the 09-14 fault signature, on the floor, at full rate, for the first
+time**: one corner's reported speed collapsing while the others read steady, and the ESCs answering
+with **+14 to +22 A**. ⇒ the RR hall fix reduced it but did not remove it, exactly as
+`esc_config_audit` predicted ("the main cause, not the whole cause"). Likely the same mechanism as
+the hard neutral stop and the residual end-of-stop jerk.
 
 ---
 

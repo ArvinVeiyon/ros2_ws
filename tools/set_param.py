@@ -115,8 +115,11 @@ def main():
         print(f'!! MISMATCH: asked {args.value}, got {got}. Not applied.')
         return 1
     print('verified.')
-    print('NOTE: this is a RAM write. It does NOT survive an FC reboot unless '
-          'saved (QGC, or `param save` in NuttShell).')
+    print('NOTE: PX4 autosaves this to flash on its own -- param_set() calls '
+          'param_autosave() (parameters.cpp:450), which writes after 300 ms, '
+          'rate-limited to 2 s (autosave.cpp:60). No save step is needed. '
+          'Verified 2026-09-12: RO_MAX_THR_SPEED=4.93 survived an FC reboot. '
+          'Only caveat: do not reboot within ~2 s of the write.')
     return 0
 
 

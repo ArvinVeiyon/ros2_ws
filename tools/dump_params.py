@@ -51,6 +51,27 @@ def main():
     print(f'connecting {args.url} ...', flush=True)
     if m.wait_heartbeat(timeout=15) is None:
         sys.exit('no heartbeat -- is mavlink.router.service up?')
+
+    # wait_heartbeat() latches the FIRST heartbeat on the link, which on this router is
+    # not necessarily the autopilot -- on 2026-09-14 it set target 0:0 and the resulting
+    # PARAM_REQUEST_LIST returned nothing at all ("received 0 of None"), writing a
+    # header-only .params file that LOOKED like a backup. Filter for the real autopilot
+    # the same way set_param.py does: component 1, autopilot type != INVALID(8).
+    hb = None
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        cand = m.recv_match(type='HEARTBEAT', blocking=True, timeout=1)
+        if cand is None:
+            continue
+        if (cand.get_srcComponent() == mavutil.mavlink.MAV_COMP_ID_AUTOPILOT1
+                and cand.autopilot != mavutil.mavlink.MAV_AUTOPILOT_INVALID):
+            hb = cand
+            break
+    if hb is None:
+        sys.exit('no AUTOPILOT heartbeat (component 1) within 5 s -- refusing to write '
+                 'a backup that would be empty.')
+    m.target_system = hb.get_srcSystem()
+    m.target_component = hb.get_srcComponent()
     print(f'  autopilot {m.target_system}:{m.target_component}', flush=True)
 
     params = {}
