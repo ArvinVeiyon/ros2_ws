@@ -152,29 +152,64 @@ the weight of an existing one.
   the controller regulates against its own under-read — **circular feedback sitting in the safety
   path**. → `autonav_reference.md` §10. ⛔ This is not fixed by better odometry calibration.
 
-### 6.4 The realignment
+### 6.4 ✅ ARCHITECTURE DECIDED 2026-09-20 (operator) — camera localizes, LiDAR guards
 
-* 🔑 **The product is Case B on a site (§1). Its blocker is localization, and the industry answer
-  for this exact venue is a 2D LiDAR.**
-* 🔴 **Visual relocalization is failing 0 of 20 on the map's own bag, at the GEOMETRY stage.**
-  ⛔ Continuing to tune it is optimizing the path the industry does **not** take for this venue.
-* ⇒ **Highest-leverage move: fit a 360° LiDAR** — recover the STL-19 or buy a second unit.
-  It addresses **four** open problems at once:
-  * **localization** — geometric scan matching, robust on concrete and racking where visual
-    features are sparse or repetitive (§4);
-  * **the 268° blind arc** — the side-approaching forklift, currently an envelope limit (§4);
-  * **reverse and pivot safety** — the recoveries deliberately removed from M2;
-  * **the "lidar owns `/scan`" path is already designed** — `setup_manual.md` §269 / §F5, with
-    `depth_to_scan` remapping to `/scan_depth`.
-* ✅ **The depth camera then moves to its correct role** — 3D forward obstacles, the class LiDAR
-  misses, which is what `autonomy_plan.md` §2 always said it was for.
-* ⚠️ **It does not solve everything.** A 2D LiDAR still cannot see **negative obstacles** (§4) —
-  potholes and dock edges remain an open scope decision either way.
+* ✅ **The DEPTH CAMERA is the localization sensor**, feeding **both the local and the global planner.**
+* ✅ **A LiDAR, if fitted, is for COLLISION AND OBSTACLE AVOIDANCE ONLY** — not localization.
+* ⛔ **This overrides the LiDAR-primary suggestion previously drafted here.** Do not re-propose it.
 
-### 6.5 Immediate implication for what is on the bench
+**Why this is reasoned, not a preference — record it so it is not re-litigated:**
+
+* **A 2D LiDAR is a single horizontal slice, and a yard is mostly open.** Scan matching needs
+  vertical structure to bite on; an open apron offers little, so 2D geometry can be **degenerate
+  outdoors** in exactly the venue we are targeting (§1).
+* **One sensor spans the whole site.** The camera works indoors *and* outdoors and through the
+  transition; a 2D LiDAR degrades outdoors — sunlight, rain, and no walls to match.
+* **It is the sensor we actually have, characterised.** Gemini 336L is fitted, calibrated and
+  G0-closed; the STL-19 is **not fitted and is allocated to the drone** (§6.2).
+* **Visual SLAM for AMRs is industrially deployed**, not experimental.
+* 🔑 **This split is BETTER on safety than LiDAR-primary would have been.** Putting the LiDAR on
+  collision and obstacle duty directly closes the **268° blind arc** and the side-approaching
+  forklift (§4) — the risk a LiDAR-primary architecture would have left open by using it for
+  localization instead.
+
+### 6.5 What the decision does NOT change
+
+* 🔴🔴 **Relocalization failing 0 of 20 is now THE critical path, not a side path.**
+  Choosing camera-primary **commits to fixing it** — the blocker does not move, it becomes central.
+  It fails at **geometry, not appearance**. → `indoor_mapping_slam` §17.
+* ⛔ **Negative obstacles are still unsolved and unassigned** (§4). Neither sensor as configured
+  sees a pothole; the `/scan_3d` band discards sub-ground points.
+* 🔴 **Circular feedback stays** — `rover-ekf-bridge` feeds the EKF from `/odom` (§6.3).
+
+### 6.6 Camera-primary: the known failure modes, and the practical mitigation
+
+⚠️ These are design inputs, not objections. Each has a standard answer.
+
+| Risk at a site | Why it bites | Mitigation |
+|---|---|---|
+| **Featureless concrete apron** | too few visual features to match | **fiducial markers** (below) |
+| **Repetitive racking / identical bays** | perceptual aliasing — a confident match on the WRONG bay (§4) | fiducials carry a **unique ID**, which removes the ambiguity outright |
+| **Roller-door lighting transition** | large fast exposure swing, a known VO failure | exposure strategy; validate the transition explicitly |
+| **Direct sun / glare / darkness** | stereo degrades | 336L is IR-pass; ⛔ still verify on site |
+
+* 🔑 **FIDUCIAL MARKERS (AprilTag) ARE THE PROVEN ANSWER** for visual localization in feature-poor
+  or repetitive sites — cheap to print and affix, and documented to give **more robust tracking and
+  relocalization** than markerless SLAM. They fix the two worst risks above at once.
+* ✅ Favourable for us: indoor sites have **stable artificial lighting** and rarely need long-range
+  perception — both work in a camera's favour.
+* ⚠️ **Placement is a real design task, not decoration.** A planar marker has one surface normal and
+  is only readable within a limited cone about it — a rack-facing tag seen edge-on down an aisle is
+  useless. Plan coverage along the **actual route**, tied to the §5 survey.
+
+### 6.7 Immediate implication for what is on the bench
 
 * **T3 (`ObstacleFootprint.scale`)** — finish to a working value, take the 3 runs, **then stop.**
-  It is M2 local avoidance, genuinely reusable as a *chain*; its odom-frame *tuning* is not.
-* ⛔ **Do not start new work that assumes odometry is the position source.**
-* ⏭ **Next decision is a hardware one, not a software one:** LiDAR, yes or no. Everything in §6.4
-  waits on it.
+  The avoidance *chain* is reusable; its odom-frame *tuning* is not.
+* ⛔ **Start no new work that assumes odometry is the position source.**
+* ⏭ **Next work is relocalization**, now on the primary path by decision. Before more tuning:
+  1. **Why does it fail at geometry?** 0/20 on the map's own bag is a pipeline fault, not a map fault.
+  2. **Decide on fiducials** — they change what "good relocalization" has to achieve unaided.
+  3. **Survey the route for coverage** (§5) — longest unmatched stretch sizes the odometry budget.
+* ⏭ **LiDAR is now a SAFETY question, not a localization one** — worth fitting for the 268° arc and
+  reverse/pivot safety, on its own merits and its own timeline.
