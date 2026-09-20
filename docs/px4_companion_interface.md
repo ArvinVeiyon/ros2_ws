@@ -156,17 +156,33 @@ All line numbers are `src/modules/uxrce_dds_client/dds_topics.yaml`. **31 out, 3
 * ⛔ **Operator decision only. Never write a vehicle parameter without an explicit yes.**
 * → `setup_manual.md` §A7 for the changelog and the `RO_*` vs `EKF2_*` split.
 
-### 9.3 ⛔ VIO is NOT localization — do not substitute one for the other
+### 9.3 VIO vs map localization — TWO CASES, and only one of them needs localization
 
-* **VIO gives RELATIVE motion.** It drifts without bound and has no absolute reference.
-* **"Pick a map and execute a mission on it" needs ABSOLUTE pose on that map** — that is
-  *localization*, a different algorithm with different failure modes.
-* ⇒ **Feeding VIO alone to PX4 produces a confident position that slowly walks away from reality.**
-  The mission executes correctly against coordinates that mean progressively less.
-* 🔴 **Localization is the current blocker** — 0 accepted of 20 on the map's own bag; it fails at
-  geometry, not appearance. → `indoor_mapping_slam` §17.
-* 🔑 **Order: localization first, VIO second.** VIO reduces drift *between* fixes; it does not
-  replace the fixes.
+⛔ **CORRECTED 2026-09-20.** An earlier draft of this section said "VIO is NOT localization, do not
+substitute" and implied the VIO route was unsound. **That was wrong and it hid a cheaper path.**
+✅ **Depth-camera VIO → `vehicle_visual_odometry` → EKF2 is THE standard, documented PX4 method for
+GPS-denied indoor flight** — see the PX4 Guide, *Computer Vision → Visual Inertial Odometry*
+(their worked example is a D455 stereo depth camera with OpenVINS).
+
+The real distinction is **what frame the mission is defined in**, and PX4's own wording draws it:
+VIO estimates pose *"relative to a local starting position"*.
+
+* ✅ **CASE A — mission defined RELATIVE TO THE START POINT.**
+  * VIO alone is **sufficient**. No map, no relocalization, no `map` frame.
+  * This is the standard PX4 indoor workflow and it is proven by many vehicles.
+  * ⇒ 🔑 **This path does NOT depend on our dead relocalization.** It is available independently.
+  * ⚠️ Cost: drift accumulates with distance travelled, so it suits bounded runs. Quantify it on
+    this vehicle before trusting a long one.
+* 🔴 **CASE B — mission defined on a PREVIOUSLY BUILT MAP** ("pick the house map and run a patrol on it").
+  * VIO **cannot** do this alone: it knows how far it has moved since *this* boot, not that it is
+    standing in the kitchen of a map recorded last week.
+  * This needs **relocalization** against the saved map, on top of VIO.
+  * 🔴 That is the half currently broken — 0 accepted of 20 on the map's own bag, failing at
+    geometry not appearance. → `indoor_mapping_slam` §17.
+* 🔑 **RTAB-Map provides BOTH halves** — `rgbd_odometry` is the VIO half and it works; map
+  relocalization is the half that fails. ⛔ Do not describe them as rival systems.
+* ⇒ **Decide which case you are building.** Case A is reachable now and is the cheaper route to an
+  indoor mission; Case B is what "pick a map" in §9.4 actually requires.
 
 ### 9.4 The frame problem any QGC map layer must solve
 
@@ -184,7 +200,9 @@ All line numbers are `src/modules/uxrce_dds_client/dds_topics.yaml`. **31 out, 3
 
 ### 9.5 Order of work — what must be true, in sequence
 
-1. **Localization working** on the existing map. 🔴 the current blocker; everything else waits.
+1. **Pick Case A or Case B (§9.3).** ✅ **Case A needs no localization** — VIO alone, mission
+   relative to the start point, the standard PX4 route. 🔴 **Case B** needs relocalization on the
+   saved map working first; that is the current blocker.
 2. **Anchoring scheme decided** — map origin, or map-frame goals (§9.4).
 3. **Companion publishes pose** on `/fmu/in/vehicle_visual_odometry` (`dds_topics.yaml:184`) or
    `/fmu/in/aux_global_position` (`:205`). ✅ both already bridged — no firmware change.
