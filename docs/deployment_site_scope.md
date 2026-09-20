@@ -310,6 +310,48 @@ Raised because "then I will buy a better LiDAR instead". **No.** A 2D LiDAR cann
 * ⚠️ **Specular returns** — polished floors, bare metal machinery, glass partitions.
 * ⚠️ **Layout churn** — units reconfigure; LiDAR maps need maintenance.
 
+### 7.9 ✅ The depth camera's primary job — the LOCAL MAP for planning
+
+* ✅ **The depth camera builds the local map (the costmap), and planning runs on it.** That is its
+  main role, and it **already works** — T3 demonstrated avoidance and rejoin on it.
+* 🔑 Consistent with §7.1: the camera supplies the **obstacle information** the local and global
+  planners consume. ⛔ Not the same as localizing.
+* ⇒ **Two jobs, kept separate:** `camera → local map → planning` ✅ working ·
+  `relocalization → pose` 🔴 the 0/20 blocker.
+
+### 7.10 🔬 VIO / SLAM stack options — assessed against the live box, 2026-09-21
+
+**⚠️ Option A — ORB-SLAM3 / OpenVINS (VI mode) → `robot_localization` EKF**
+
+* ✅ **IMU available and live:** `/camera/accel/sample`, `/camera/gyro/sample`.
+* ❌🔴 **The stereo IR streams are NOT published** — live topics are **colour + depth + IMU only**.
+  Option A needs them **enabled first**, at USB-bandwidth and CPU cost. ⛔ Do not assume they exist.
+* ✅ The "clean IR / IR-pass filter kills indoor glare" claim is **genuine** — the 336L *is* the
+  IR-pass variant. Sound reasoning, not free.
+* 🔴 **CPU makes it unaffordable today.** Measured: **load 2.68 of 4**, `wheel_odometry` 54.5%,
+  camera container 45.5% ⇒ **~1.3 cores free with FPV OFF** (FPV costs **139% of a core**), i.e.
+  near-zero headroom with video. `rgbd_odometry` alone is **79.6% of a core stationary**.
+* 🔴 **It solves the wrong half** — it produces **VIO = odometry**, and the blocker is **Case B
+  relocalization**. ⛔ **OpenVINS has no map reuse at all.**
+* ⚠️ Adds a **third estimator** (`robot_localization` + PX4 EKF2 + RTAB-Map) to a system that
+  already has `/odom`↔EKF circular feedback (§6.3).
+* ✅✅ **One real use — as a DIAGNOSTIC.** ORB-SLAM3's relocalization on the same bag answers
+  *"is the failure RTAB-Map-specific or fundamental to visual relocalization here?"* — worth one
+  experiment, ⛔ not an architecture decision.
+
+**✅ Option B — RTAB-Map all-in-one (camera + `/scan`) = the target architecture**
+
+* ✅ Right shape: already running, does **odometry and relocalization**, and fusing visual features
+  with laser scan matching is exactly the fusion-not-replacement conclusion (§6.4).
+* 🔴🔴 **Catch the proposal missed: our `/scan` comes from the DEPTH CAMERA**
+  (`depthimage_to_laserscan`), **not a LiDAR.** Feeding it back to RTAB-Map is **the same data
+  twice** — no independent constraint, no independent failure mode.
+* ⇒ **Option B pays off only once a real LiDAR is fitted.** ⏭ Worth designing toward now so the
+  LiDAR decision is not retrofitted.
+
+**⏭ Order:** diagnose the 0/20 first (both options would inherit the fault) → run Option A **once**
+as an experiment → Option B as the target, gated on a LiDAR.
+
 ### 7.8 ⏭ The next action is a DIAGNOSIS, not a purchase
 
 * 🔴🔴 **Relocalization returns 0 accepted of 20 on the map's OWN recorded bag, failing at
