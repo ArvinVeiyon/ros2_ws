@@ -183,8 +183,9 @@ VIO estimates pose *"relative to a local starting position"*.
   relocalization is the half that fails. ⛔ Do not describe them as rival systems.
 * ✅ **DECIDED 2026-09-20: the product is CASE B.** ⇒ relocalization is unavoidable.
   → `deployment_site_scope.md` §1.
-* ⇒ **Decide which case you are building.** Case A is reachable now and is the cheaper route to an
-  indoor mission; Case B is what "pick a map" in §9.4 actually requires.
+* ✅ **DECIDED: Case B**, and **indoor ("internal mode") first**. → `deployment_site_scope.md` §1, §8.
+* ⚠️ Case A remains the cheaper route to *an* indoor mission if the product definition ever relaxes —
+  ⛔ but it is not what "pick a map" in §9.4 requires, and it is not the product.
 
 ### 9.4 The frame problem any QGC map layer must solve
 
@@ -208,6 +209,11 @@ VIO estimates pose *"relative to a local starting position"*.
 2. **Anchoring scheme decided** — map origin, or map-frame goals (§9.4).
 3. **Companion publishes pose** on `/fmu/in/vehicle_visual_odometry` (`dds_topics.yaml:184`) or
    `/fmu/in/aux_global_position` (`:205`). ✅ both already bridged — no firmware change.
+   * 🔑🔑 **PUBLISH THE MAP-RELATIVE POSE FROM RELOCALIZATION, NOT RAW VIO.** Same topic, different
+     source. ⛔ Raw VIO would give PX4 a **confidently drifting** position — it is *"relative to a
+     local starting position"*, which is Case A, not our Case B.
+   * ⚠️ **VIO replaces ENCODERS, not GPS.** A drone needs it because it has no wheels; this rover
+     already has the incremental half. → `deployment_site_scope.md` §7.2.
 4. **`EKF2_EV_CTRL` gains bit 0** — ⛔ operator decision, and it touches the drone (§9.2).
 5. **`eph` falls below `COM_POS_FS_EPH`** (5 m) ⇒ armed AutoNav and `AUTO_MISSION` become available.
 6. **QGC layer last** — it is UI over a capability that must already exist.

@@ -20,6 +20,11 @@
   * a **manufacturing unit / warehouse**,
   * possibly both, with transitions between them.
 * ⚠️ **GPS may or may not be present**, and may be present *intermittently* within one site.
+* ✅ **SEQUENCING DECIDED 2026-09-21: INDOOR ("internal mode") IS THE FIRST TARGET.**
+  The manufacturing unit / inside comes first; the yard and outdoor GPS work follow.
+  🔑 This **agrees with what is already written** — `autonomy_plan.md` §3 is titled
+  *"Application A — INDOOR SURVEILLANCE (first target)"*. ⛔ Nothing is reordered; this only makes
+  the venue explicit (a unit, not a house) and confirms the order.
 
 ## 2. What this does NOT change
 
@@ -104,16 +109,6 @@ the weight of an existing one.
   *where can it match, and how long is the longest unmatched stretch?* That number — not the site
   area — sizes the odometry budget and decides whether the route is viable as drawn.
 
-## References
-
-* Application A shape and A1–A9: `autonomy_plan.md` §3
-* Outdoor GPS mission and the companion's role: `autonomy_plan.md` §4
-* Case A / Case B, `EKF2_EV_CTRL`, position injection: `px4_companion_interface.md` §9
-* Relocalization failure: `memory/project_indoor_mapping_slam.md` §17
-* Sensor envelope and FOV: `px4_companion_interface.md` §4, `rover_geometry.md`
-
----
-
 ## 6. Aligning the current work — cross-checked against comparable systems
 
 > Added 2026-09-20 after an operator challenge: *"from the beginning I told you do not rely on
@@ -155,8 +150,14 @@ the weight of an existing one.
 ### 6.4 ✅ ARCHITECTURE DECIDED 2026-09-20 (operator) — camera localizes, LiDAR guards
 
 * ✅ **The DEPTH CAMERA is the localization sensor**, feeding **both the local and the global planner.**
-* ✅ **A LiDAR, if fitted, is for COLLISION AND OBSTACLE AVOIDANCE ONLY** — not localization.
+* ✅ **A LiDAR is NOT the primary localization sensor.** Its jobs are **collision and obstacle
+  avoidance** and the **268° blind arc**.
 * ⛔ **This overrides the LiDAR-primary suggestion previously drafted here.** Do not re-propose it.
+* ⚠️ **REFINED 2026-09-21 — "not primary" is not the same as "excluded".** RTAB-Map is a **LiDAR
+  *and* visual SLAM library**, and the literature's reason for scoring it above AMCL is precisely
+  that it **fuses both**. So a fitted LiDAR may contribute **geometric constraint** indoors without
+  displacing the camera. 🔑 **Fusion, not replacement.** ⛔ Do not read this as re-opening the
+  primary-sensor decision — the camera stays primary.
 
 **Why this is reasoned, not a preference — record it so it is not re-litigated:**
 
@@ -213,3 +214,132 @@ the weight of an existing one.
   3. **Survey the route for coverage** (§5) — longest unmatched stretch sizes the odometry budget.
 * ⏭ **LiDAR is now a SAFETY question, not a localization one** — worth fitting for the 268° arc and
   reverse/pivot safety, on its own merits and its own timeline.
+
+
+---
+
+## 7. Settled 2026-09-21 — the questions that kept coming back
+
+Each of these was argued out and resolved. ⛔ Recorded so they are not re-opened from scratch.
+
+### 7.1 Planning is not localization
+
+* **Localization** answers *"where am I?"* → it **produces** a pose. GPS, VIO, scan matching, visual relocalization.
+* **Planning**, local and global, answers *"how do I get there without hitting things?"* → it
+  **consumes** a pose and produces a path or a velocity.
+* 🔑 **PX4's own avoidance stack is evidence for the split, not against it.** `local_planner` is a
+  **VFH+\* vector-field-histogram** planner; `global_planner` is a **graph planner over an octomap**;
+  the depth camera supplies the **obstacle information** to both. And PX4 states plainly of the
+  global planner: *"For the map to be good enough for navigation, **accurate global position and
+  heading are required**."* — it requires pose as an **input**.
+* ⇒ ✅ **"Depth camera feeds both the local and global planner" is CORRECT** and is what our Nav2
+  already does. ⛔ It is not a claim that the camera localizes. On this rover the localization job
+  belongs to **RTAB-Map**, which is the component returning 0 of 20.
+* ⚠️ `PX4-Avoidance` is a **multicopter** package and no rover module consumes `obstacle_distance`
+  — ⛔ not transplantable to this vehicle.
+
+### 7.2 VIO replaces ENCODERS, not GPS
+
+* **VIO** = relative motion, drifting, *"relative to a local starting position"* (PX4's own words).
+  A drone needs it because it **has no wheels and therefore no odometry at all**.
+* **Relocalization / scan matching** = absolute pose on a known map. That is the GPS-shaped hole.
+* ⇒ 🔑 **On this rover VIO matters LESS than on a drone**, because wheel encoders already cover the
+  incremental half. What is missing is the **absolute** half. ⛔ Adding VIO would improve motion
+  *between* fixes; it would not produce a single fix.
+* ⇒ **What the companion should publish to PX4 is the MAP-RELATIVE pose from relocalization**, not
+  raw VIO. Same topic, different source. → `px4_companion_interface.md` §9.
+
+### 7.3 Why drones use VIO indoors and ground robots use LiDAR — it is the MOTION MODEL
+
+* **2D scan matching assumes planar motion**: a fixed horizontal slice of a fixed world.
+* ✅ **A rover satisfies that assumption** — floor-constrained, effectively 3-DOF (x, y, yaw), scan
+  plane parallel to the ground.
+* ❌ **A drone violates it constantly** — roll and pitch tilt the scan plane, climbing moves the
+  slice to a different part of the room, and a 2D LiDAR gives **no altitude at all**. Plus weight
+  and power on an airframe.
+* ⇒ ⛔ **The drone world's preference for VIO is NOT evidence that LiDAR is weak indoors.** The very
+  assumption that makes 2D LiDAR work is the one the rover meets and the drone does not.
+
+### 7.4 ✅ The commonality argument — a real reason for camera-primary
+
+* **A camera-based stack transfers to the drone. A 2D-LiDAR-based one does not.**
+* The two vehicles already **share the FC**, so a shared perception stack has real value.
+* ⇒ **Rover alone, indoors → LiDAR is the stronger localization sensor. Rover + drone, one stack →
+  the camera is the only option that serves both.** Both defensible; the choice turns on how much a
+  shared stack is worth. ✅ **Decided: camera-primary (§6.4).**
+* ⚠️ **Open question:** the STL-19 is *"not fitted — allocated to the drone"*. If that allocation is
+  for **localization**, it is on the vehicle a 2D LiDAR helps **least** and absent from the one it
+  helps **most**. ⏭ **Check what job it was actually assigned** — the allocation may be backwards.
+
+### 7.5 ⛔ The camera is NOT replaceable by a LiDAR
+
+Raised because "then I will buy a better LiDAR instead". **No.** A 2D LiDAR cannot see:
+
+* **A person lying on the floor.** ISO 3691-4 tests personnel detection with a **70 mm × 400 mm
+  horizontal cylinder on the ground**. A LiDAR scanning at 200–300 mm passes straight over it.
+* **Forklift tines, overhanging or cantilevered loads, partially occupied shelves** — the documented
+  weakness of single-plane perception.
+* **Negative obstacles** — a hole is invisible to a horizontal plane. The camera can see one
+  geometrically, once sub-ground points stop being discarded (§4).
+* **Anything semantic** — drivable surface, person vs pallet. ⛔ "Find the road" needs a camera.
+* ✅ And the camera is **already bought, mounted and calibrated (G0 closed)** — a working asset.
+* ⇒ **The question was never "camera or LiDAR". It is "do we ADD a LiDAR to the camera we have".**
+
+### 7.6 🔴 Safety rating is a separate purchase — settle it early
+
+* **ISO 3691-4** governs driverless industrial trucks: personnel detection, speed control, behaviour
+  in shared spaces. Where people may be present it expects a **safety-rated laser scanner** with
+  layered fields (outer warning slows, inner protective stops).
+* Scanners must be **IEC 61496 Type 3**; anything without it *"should not be selected as the primary
+  safeguard"*. Typically **PL d** across the whole chain.
+* 🔴 **Neither the Gemini 336L nor an STL-19P is safety-rated.**
+* ⇒ if the unit has people in it, a **third, certified device** is required — separate from both the
+  navigation LiDAR and the camera. ⛔ Do not assume one hobby unit can carry a site audit.
+* ⚠️ Applicability depends on the deployment and the customer — ⏭ **confirm before site selection**,
+  because it drives cost and mounting more than anything else discussed here.
+
+### 7.7 ⚠️ 2D LiDAR in a manufacturing unit — real caveats if one is fitted
+
+* ✅ **Localization: the textbook best case** — abundant geometric structure, weak/repetitive
+  texture, and total immunity to lighting.
+* ⚠️ **Scan-plane height is the critical mounting decision.** A plane at pallet height sees stock,
+  pallets and tines — things that **move**. Localizing against movable objects gives a map that goes
+  stale. **Mount to see structure, not inventory.**
+* ⚠️ **Range:** the STL-19P is **12 m, ±45 mm**. Dense unit: fine. Large open hall: it may see
+  nothing fixed. ⏭ **Only the site dimensions settle it** — part of the §5 survey.
+* ⚠️ **Specular returns** — polished floors, bare metal machinery, glass partitions.
+* ⚠️ **Layout churn** — units reconfigure; LiDAR maps need maintenance.
+
+### 7.8 ⏭ The next action is a DIAGNOSIS, not a purchase
+
+* 🔴🔴 **Relocalization returns 0 accepted of 20 on the map's OWN recorded bag, failing at
+  GEOMETRY not appearance.** That is a **pipeline fault**.
+* ⛔ **Buy nothing until it is diagnosed.** A new sensor feeding a broken pipeline buys nothing, and
+  the diagnosis decides which sensor is even the right one.
+* 🔑 **This is true under every architecture discussed above.** It is the one item that does not
+  depend on any of the open choices.
+
+---
+
+## 8. Indoor-first — the working order
+
+1. 🔴 **Diagnose the 0/20 relocalization failure** (§7.8). Blocking, and independent of every other choice.
+2. **Finish T3 to a working value, take the 3 runs, then stop** (§6.7). The avoidance *chain* is
+   reusable; its odom-frame *tuning* is not.
+3. **Survey the unit** (§5) — dimensions, surface, lighting, traffic, and the **longest unmatched
+   stretch** on the intended route.
+4. **Decide fiducials** (§6.6) — they change what unaided relocalization has to achieve.
+5. **Confirm the safety-rating question** (§7.6) before site selection.
+6. ⏭ **Then** negative obstacles (§4), LiDAR-for-the-blind-arc (§7.4), and outdoor/GPS —
+   `autonomy_plan.md` §4 — in that order.
+
+## References
+
+* Application A shape and A1–A9: `autonomy_plan.md` §3
+* Outdoor GPS mission and the companion's role: `autonomy_plan.md` §4
+* Case A / Case B, `EKF2_EV_CTRL`, position injection: `px4_companion_interface.md` §9
+* Relocalization failure: `memory/project_indoor_mapping_slam.md` §17
+* Sensor envelope and FOV: `px4_companion_interface.md` §4, `rover_geometry.md`
+
+---
+
