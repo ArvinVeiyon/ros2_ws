@@ -23,6 +23,7 @@ Kept separate because they hold derivations and raw data the summaries cannot ca
 | [`vision_streaming.md`](vision_streaming.md) | The FPV video fault record — the CPU-starvation latch and the camera wedge |
 | [`autonomy_plan.md`](autonomy_plan.md) | Operating modes M0–M4 and the autonomy-level appendices |
 | [`rover_autonav_requirements.md`](rover_autonav_requirements.md) | The AutoNav requirements set |
+| [`deployment_site_scope.md`](deployment_site_scope.md) | **Where the rover actually deploys** — the product is Case B (mission on a pre-built map) and the venue is a bounded *site*: yard or manufacturing unit, GPS optional. Records what the venue makes worse (negative obstacles, side-approaching vehicles, scale, featureless scenes). **Additive: changes no goal or feature list** |
 | [`px4_companion_interface.md`](px4_companion_interface.md) | **PX4 ↔ companion interface for an outdoor QGC mission** — what PX4 already provides, what it does not, the QGC→PX4→wheels chain, and every bridged topic the companion reads or publishes, cited to the flashed firmware `a52c38b07d`. **Additive: changes no goal or ladder** |
 | [`indoor_mapping_plan.md`](indoor_mapping_plan.md) | The indoor mapping plan and its measured costs |
 | [`rover_autonav_collision_stop.md`](rover_autonav_collision_stop.md) | Reflex design rationale and its floor validation. ⚠️ its arming workflow is now in `setup_manual.md` §D6, and **its claim that the ch8 kill is proven in AutoNav contradicts every other record — see the flag in §D6** |

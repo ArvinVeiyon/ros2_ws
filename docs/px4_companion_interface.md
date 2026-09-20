@@ -181,6 +181,8 @@ VIO estimates pose *"relative to a local starting position"*.
     geometry not appearance. → `indoor_mapping_slam` §17.
 * 🔑 **RTAB-Map provides BOTH halves** — `rgbd_odometry` is the VIO half and it works; map
   relocalization is the half that fails. ⛔ Do not describe them as rival systems.
+* ✅ **DECIDED 2026-09-20: the product is CASE B.** ⇒ relocalization is unavoidable.
+  → `deployment_site_scope.md` §1.
 * ⇒ **Decide which case you are building.** Case A is reachable now and is the cheaper route to an
   indoor mission; Case B is what "pick a map" in §9.4 actually requires.
 

@@ -75,6 +75,11 @@ failure mode. Nav2 + voxel costmap + RTAB-Map on top is the genuine risk.
 
 ## 3. Application A — INDOOR SURVEILLANCE (first target)
 
+> 🔗 **VENUE, decided 2026-09-20: "indoor" means a bounded SITE — a yard or a manufacturing
+> unit, GPS optional — not a house.** ✅ **A's shape and A1–A9 below are correct and unchanged**;
+> only the venue assumption differs, and the site raises the weight of negative obstacles and
+> side-approaching vehicles. → `deployment_site_scope.md`
+
 **What the user does:** picks a room or a patrol route on a saved house map, presses go.
 **What the rover does:** localizes itself, routes there, avoids people and moved
 furniture, streams video, returns to base, repeats.
