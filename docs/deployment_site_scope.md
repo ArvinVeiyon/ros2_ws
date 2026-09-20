@@ -352,6 +352,21 @@ Raised because "then I will buy a better LiDAR instead". **No.** A 2D LiDAR cann
 **⏭ Order:** diagnose the 0/20 first (both options would inherit the fault) → run Option A **once**
 as an experiment → Option B as the target, gated on a LiDAR.
 
+### 7.11 ⚠️ "MAP" MEANS TWO DIFFERENT THINGS — the trap that recurred three times
+
+* **Obstacle map / costmap** — stores *what is in the way*. Built **using** your pose, consumed by
+  the planner. **PX4's `global_planner` octomap is this**, and so are our Nav2 local + global
+  costmaps.
+* **Localization map** — stores *what the world looks like*, so live sensing can be matched against
+  it to recover *where you are*. **RTAB-Map's `house_map_v4.db` is this.**
+* 🔑🔑 **An obstacle map can NEVER localize you, because it was built assuming you already knew
+  where you were.** If pose drifts, obstacles are written into the map *at the drifted place* — the
+  error is baked in, not detectable. Nothing is left to compare against.
+* ⇒ PX4 saying the `global_planner` *"builds a map of the environment"* is **true and irrelevant to
+  localization** — the same page requires *"accurate global position and heading"* to build it.
+* ✅ **We already have both, and only one is broken:** Nav2 costmaps ✅ working (T3 avoided and
+  rejoined) · RTAB-Map database 🔴 0 of 20.
+
 ### 7.8 ⏭ The next action is a DIAGNOSIS, not a purchase
 
 * 🔴🔴 **Relocalization returns 0 accepted of 20 on the map's OWN recorded bag, failing at
