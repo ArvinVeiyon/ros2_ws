@@ -128,6 +128,15 @@ Orbbec 336L ──USB3──► OrbbecSDK_ROS2 ─depth─► depthimage_to_lase
 3. Bridge watchdogs: `cmd_vel` older than 500 ms → zero setpoint; depth/`/scan` older than 1 s → controlled stop.
 4. Nav2 costmap keeps ≥ 0.5 m stopping buffer at max speed.
 5. Disarm on companion crash: PX4 offboard timeout behavior verified in M4 bench test.
+6. 🔴🔴 **THE REFLEX COVERS *ONLY* AutoNav. In `AUTO_MISSION` there is no obstacle protection at
+   all** — added 2026-09-20, verified against the flashed source `a52c38b07d`. `px4_ros2` calls
+   `AutoNavMode::updateSetpoint()` only while `nav_state == 23`, so in a mission the reflex is not
+   overridden, it is **never executed**; and PX4's own `CollisionPrevention` is referenced by no
+   rover module (it is a multicopter *manual*-mode feature), so `obstacle_distance` cannot cover
+   for it. ⇒ **An outdoor mission today drives its line and hits whatever is on it.** The fix is a
+   mode-independent safety supervisor — scope, intervention levers and the S1/S2/S3 ladder are
+   defined in `autonomy_plan.md` §4 *The companion's role outdoors*. ⛔ Do not sign off any
+   outdoor mission capability until S1 exists.
 
 ### R6 — Compute budget (RPi5 8GB, shared with vision streaming x264)
 - Total new load target ≤ 2.0 cores steady-state: Orbbec+laserscan ≤ 0.6, SLAM ≤ 0.5, Nav2 ≤ 0.6, bridge+odom ≤ 0.1.

@@ -153,9 +153,166 @@ Mixing them badly is a classic failure. `roadmap.md` O4 picks Nav2. **Decide bef
 building outdoor**, because it determines whether RTL is a PX4 behaviour or a Nav2 one.
 
 ### Depth camera outdoors — honest limits
-* Range ~3-5 m usable => caps safe speed. At 0.6 m/s a 235 ms perception gap is ~14 cm.
+* ⛔ **"Range ~3-5 m usable" was WRONG — corrected 2026-09-20 against the DATASHEET.**
+  **Orbbec Gemini 336L: depth range 0.17-20 m+, OPTIMAL RANGE 0.25-6 m**, spatial precision
+  **<=0.8% @ 2 m and <=1.6% @ 4 m**, depth FOV H90 V65, up to 1280x800@30fps.
+  ⚠️ **Those precision figures are quoted at 1280x800. We run 640x360** — a quarter of the pixels,
+  so disparity precision at range is worse and **we have not quantified how much.**
+  (Live sanity check the same day, from inside the small test room: returns to 7.883 m, p99.9
+  6.833 m — consistent with the datasheet, and a tail rather than one stray pixel.)
+* 🔑 **THE 5 m LIMIT IS OURS, NOT THE CAMERA'S.** `range_max: 5.0` in `depth_to_scan.launch.py` is a
+  deliberate indoor geometry choice: at `cam_z` 0.305 the **floor enters the scan band at 6.25 m**
+  and would be published as an obstacle. The comment there says "5.0, not 8.0 ... indoors the extra
+  range was never used. **Re-derive if cam_z changes.**" ⏭ **Outdoors that re-derivation is exactly
+  the work**, because range_max is what caps safe mission speed.
+* ⚠️ Speed arithmetic: at 0.6 m/s a 235 ms perception gap is ~14 cm.
 * 92 deg FOV => cannot see a hazard approaching from the side.
 * Gemini 336L **is** outdoor-capable (the old "blind in sunlight" note was wrong).
+
+### The companion's role outdoors — DEFINED (2026-09-20)
+
+**Division of labour.** Outdoors the split is clean, and it is the opposite of indoors:
+PX4 already solves *where am I* and *where do I go*. It solves **nothing** about *what is in
+front of me*.
+
+| Layer | Owner | Why |
+|---|---|---|
+| Where to go — waypoints, geofence, RTL, battery failsafe | **PX4** | native, GPS-backed, works with the companion switched off |
+| Where the vehicle is | **PX4 + GPS** | no map and no SLAM needed outdoors — see the GLOBAL/LOCAL split above |
+| **What is in the way** | **COMPANION** | 🔴 PX4 has **no perception at all** on a rover |
+| **Whether it is still safe to continue** | **COMPANION** | nothing else is watching |
+| Low-level control, arming, kill switch | **PX4** | ⛔ never move any of this to the companion |
+
+#### 🔴🔴 THE GAP: TODAY A MISSION HAS NO OBSTACLE PROTECTION WHATSOEVER
+
+Two independent facts, both read out of the **flashed** firmware source (`a52c38b07d`,
+`~/apps/PX4-Autopilot`) on 2026-09-20:
+
+1. **The collision reflex is never called outside AutoNav.** It lives in
+   `AutoNavMode::updateSetpoint()`, and `px4_ros2` only calls that while the mode is *active*,
+   i.e. `nav_state == 23`. A mission runs as `AUTO_MISSION`. The reflex is not bypassed or
+   overridden — **it does not execute at all.**
+2. **PX4's own collision prevention cannot cover for it.** `CollisionPrevention` is referenced
+   only by `flight_mode_manager/tasks/ManualPosition` and `StickAccelerationXY`. **No rover
+   module references it**, and even on a multicopter it is a *manual-mode* feature, not a mission
+   one. `obstacle_distance` is inert on this vehicle. (Confirms the standing note in
+   `px4_vio_collision`, now verified against source rather than assumed.)
+
+⇒ **Upload a mission today, arm, and the rover drives the line and hits whatever is on it.**
+The depth camera will be running, publishing `/scan` at ~29 Hz, and completely ignored.
+This is the single most important thing to fix before any outdoor mission runs.
+
+#### The three jobs the companion must do
+
+**1. Environment awareness — perception that runs regardless of flight mode.**
+`/scan` and `/scan_3d` already run as their own services, independent of `autonav_mode`, so the
+*data* is mode-independent today. What is missing is a **consumer** that is also mode-independent.
+
+**2. The safety envelope — decide, and intervene.**
+A supervisor node that watches perception + vehicle state in **every** mode and acts on its own
+authority. ⚠️ It must fail safe on perception loss exactly as the reflex does
+(`collision.require_scan=true`, `min_valid_fraction` 0.35) — a blind supervisor must stop the
+vehicle, not wave it through.
+
+**3. Intervention — the levers that actually exist.**
+All of these go out on `/fmu/in/vehicle_command`, which is **already bridged over DDS**; none of
+them needs a firmware change.
+
+| Lever | Command | Effect | When |
+|---|---|---|---|
+| **Pause** | `DO_SET_MODE` → `AUTO_LOITER` | holds; mission resumable | obstacle ahead — the default response |
+| **Slow** | `DO_CHANGE_SPEED` | reduces mission speed | degraded perception, rough ground |
+| **Abort** | `NAV_RETURN_TO_LAUNCH` | returns home | persistent block, low battery |
+| **Hard stop** | `COMPONENT_ARM_DISARM` (force) | motors off | imminent collision, last resort |
+| **Detour** | `DO_REPOSITION` | drive to a point | ⛔ not recommended — fights the running mission |
+
+⛔ **`DO_PAUSE_CONTINUE` does NOT exist in this firmware** — verified absent from the whole tree.
+Do not design around it.
+⛔ **The RC kill (`ch12`) stays the human's, always.** It is not a companion lever and must not
+become one.
+
+#### How far the companion should go — pick one, they are a ladder
+
+| | What it does | Can it get *around* an obstacle? | Cost |
+|---|---|---|---|
+| **S1 Supervisor** | watches, and slows / pauses / aborts | **No** — mission fails safe and stops | Small. One node. **This is the safety floor and must exist regardless of what else is built.** |
+| **S2 Handover** | on block, switch to AutoNav (mode 23), let Nav2 drive around, hand back to mission | **Yes** | Moderate — reuses `autonav_mode` + Nav2 exactly as they already work |
+| **S3 Nav2 owns the mission** | `navsat_transform`, Nav2 plans GPS-to-GPS | Yes | Large, and duplicates PX4's geofence / RTL / failsafes |
+
+**Recommendation: build S1 first, then S2.** S1 is what makes an outdoor mission *safe*; S2 is what
+makes it *useful*. S3 is the "Nav2 owns it" column of the architecture table above — ⚠️ it remains
+the open decision recorded there, but note that **S2 gets reactive avoidance without settling it.**
+
+#### What the depth camera specifically buys you outdoors
+
+It is the **entire local layer** — the only sensor on the vehicle that can see an obstacle. Its
+measured limits (see *Depth camera outdoors* above) are what set the safety envelope, and they
+translate directly into mission constraints:
+
+* **Range caps mission speed — and the cap is OURS, not the sensor's.** Datasheet optimal range is
+  **6 m**; `/scan` is clipped to **5.0 m** by `range_max`, chosen so the floor (which enters the
+  band at 6.25 m at `cam_z` 0.305) is not read as an obstacle.
+  🔑 **Note how close those three numbers sit: clip 5.0, floor intrusion 6.25, optimal range 6.0.**
+  So simply raising `range_max` buys ~1 m and then runs out of *optimal* range anyway. ⏭ **The real
+  outdoor levers are depth RESOLUTION (640x360 -> 1280x800 restores the datasheet precision, at CPU
+  cost) and `cam_z`/pitch (which sets where the floor enters).** Raising the clip alone is not the win.
+  Stopping distance must fit inside what the camera can see, perception gap included. Floor braking
+  measured 0.19 m at 0.52 s from low speed — ⚠️ **unmeasured at mission speed**, and must be
+  re-measured before any speed is signed off.
+* **Depth FOV H90° (91.9° measured on our intrinsics) ⇒ it cannot see a hazard approaching from the
+  side.** A moving obstacle on a converging course is outside the design envelope. Say so in the
+  operating limits; do not pretend otherwise.
+* **Gemini 336L is genuinely outdoor-capable** — the old "blind in sunlight" note was wrong.
+* ⛔ **Do not quote "/scan does not track beyond ~3 m" as a range limit — it is not one.** That
+  note came from a *narrow-target tracking* test, where a corridor subtends only ±4° at 3 m and the
+  angular resolution runs out. It says nothing about detecting a wall or a tree. Live `/scan` in the
+  small room returned finite beams to **3.628 m** against a 5.0 m clip, with 70% of beams finite.
+  🔑 **The real degradation at range is ANGULAR — small objects, not large ones.**
+
+#### The PX4 nav interface — what is actually on the wire
+
+Read out of `dds_topics.yaml` in the **flashed** firmware (`a52c38b07d`) on 2026-09-20:
+**32 topics bridged out, 38 in.** ⛔ Anything not in that file needs a firmware change and a
+reflash — check the list before designing around a topic.
+
+**What a supervisor can READ today — enough to build S1 with no firmware change:**
+
+| Topic | Gives you |
+|---|---|
+| `/fmu/out/failsafe_flags` | 🔑 **PX4's own failsafe state.** Don't re-derive what PX4 already decided |
+| `/fmu/out/position_setpoint_triplet` | the **active mission waypoint** (previous / current / next) |
+| `/fmu/out/vehicle_status` | `nav_state` + arming — ⚠️ the `_v1` naming trap applies |
+| `/fmu/out/vehicle_global_position` · `vehicle_local_position` | where PX4 thinks it is, and `eph` |
+| `/fmu/out/home_position` | RTL target |
+| `/fmu/out/battery_status` · `vehicle_land_detected` | the other two abort triggers |
+
+🔴 **GAP: `mission_result` is NOT bridged** (verified absent). So the companion **cannot read
+mission progress, item index, or completion** directly — it must infer them from
+`position_setpoint_triplet`. Design S1 around that, or add the topic and reflash.
+
+**What it can COMMAND:** `/fmu/in/vehicle_command` (the intervention levers above), plus the whole
+rover setpoint family — `rover_position_setpoint`, `rover_speed_setpoint`, `rover_attitude_setpoint`,
+`rover_rate_setpoint`, `rover_throttle_setpoint`, `rover_steering_setpoint`. **All six levels of the
+rover stack are addressable over DDS**, so S2 has options beyond the external mode.
+`rover_position_setpoint` is the interesting one — `DifferentialPosControl` consumes it and it
+carries `start_ned`, `arrival_speed` and `cruising_speed`, i.e. a *position* goal with a speed
+profile. ⚠️ It is **mode-gated** — which drive modes route to `PosControl` has not been checked.
+Verify before designing on it.
+
+🔑 **`/fmu/in/aux_global_position` is already bridged in** — the path for feeding an external
+global position to the EKF. Outdoors that is a fallback/augmentation route if GPS alone proves
+insufficient; it needs no firmware change.
+
+#### Gap list — what does not exist yet
+
+- [ ] **Mode-independent safety supervisor (S1).** Nothing watches perception outside AutoNav. 🔴 blocker for any outdoor mission.
+- [ ] **GPS.** DroneCAN GPS not fitted (outdoor item O2) — without it there is no mission at all.
+- [ ] **Mission-speed braking measurement.** All stopping figures are low-speed; the envelope above is unvalidated at mission speed.
+- [ ] **Perception-loss behaviour in mission mode.** Defined for AutoNav, undefined for `AUTO_MISSION`.
+- [ ] **Mission progress visibility.** `mission_result` is not bridged, so S1 must infer mission state from `position_setpoint_triplet` — or add the topic and reflash.
+- [ ] **Companion-failure behaviour.** R5.5 covers offboard timeout; a *mission* keeps running if the companion dies, because PX4 does not depend on it. That is correct for control and **wrong for safety** — decide what should happen and write it down.
+
+---
 
 ---
 
@@ -235,21 +392,33 @@ Operator sets GPS waypoints. Rover executes with PX4 safety underneath.
 
 ## 6. FAILSAFE POLICY — the layer that must hold in every mode
 
+🔴🔴 **SCOPE WARNING, 2026-09-20: the reflex rows below hold in AutoNav ONLY.** `px4_ros2` calls
+`updateSetpoint()` only while `nav_state == 23`, so in `AUTO_MISSION` they are **never executed**,
+and no rover module uses PX4's `CollisionPrevention`. This table is therefore **not yet** a
+policy for every mode. → §4 *The companion's role outdoors* for the gap and the fix.
+✅ **Param values in this table were read live off the FC 2026-09-20 — not from a snapshot.**
+
 | Trigger | Correct response | Owner | State |
 |---|---|---|---|
-| Operator kill (RC ch8) | Motors off, disarm | PX4/RC | ✅ Manual — ❌ **untested in AutoNav** |
-| Obstacle inside stop distance | Block forward, cap yaw | our reflex, in-executor | ✅ proven armed |
-| `/scan` stale > 0.5 s | Block forward | our reflex | ✅ built |
-| `/cmd_vel` stale > 0.5 s | Zero setpoint | `autonav_mode` | ✅ proven |
+| Operator kill (**RC ch12**) | Motors off | PX4/RC | ✅ `RC_MAP_KILL_SW`=12 read live. Pressed in **armed AutoNav** 09-19, rover stopped — ⚠️ not a formal pass (no latency/tape). ⛔ it is **ch12, never ch8** |
+| Obstacle inside stop distance | Block forward, cap yaw | our reflex, in-executor | ✅ proven armed — 🔴 **AutoNav only** |
+| `/scan` stale > 0.5 s | Block forward | our reflex | ✅ built — 🔴 **AutoNav only** |
+| `/cmd_vel` stale > 0.5 s | Zero setpoint | `autonav_mode` | ✅ proven — 🔴 **AutoNav only** |
 | **Localization lost / degraded** | **Stop and hold** | — | ❌ **does not exist** |
 | **No route to goal** | **Stop + notify, or return home** | — | ❌ **does not exist** |
-| RC link lost | Hold or return home | PX4 `NAV_RCL_ACT` | ⚠️ **set to DISARM** |
-| Battery low | Return home | PX4 | ❌ not configured |
-| Geofence breach | Hold / RTL | PX4 | ❌ outdoor |
+| RC link lost | Hold or return home | PX4 `NAV_RCL_ACT` | ✅ **=1, HOLD** (read live 09-20) |
+| Battery low | Return home | PX4 `COM_LOW_BAT_ACT` | ❌ **=0, warning only** (read live 09-20) |
+| Geofence breach | Hold / RTL | PX4 `GF_ACTION` | ❌ **=0, no action** (read live 09-20) — outdoor prerequisite |
 
-⚠️ **`NAV_RCL_ACT = 6` (Disarm on RC loss)** is correct for bench work and **wrong for a
-mission** — losing RC mid-patrol drops the rover dead where it stands instead of bringing
-it home. Must be a conscious decision before M3/M4.
+⛔ **CORRECTED 2026-09-20 — the previous text here claimed `NAV_RCL_ACT = 6` (Disarm on RC loss).
+It reads `1` (Hold) on the FC.** The doc was stale; RC loss does **not** disarm. Hold is a sane
+rover default, but ⚠️ it is still **not** "return home" — losing RC mid-patrol parks the rover
+where it stands. Moving it to `2` (Return) is an outdoor-mission decision for M3/M4, and needs
+GPS + a configured home first.
+⚠️ Two more rows are unconfigured and are **outdoor blockers, not preferences**:
+`COM_LOW_BAT_ACT`=0 means a flat battery produces a warning and nothing else, and `GF_ACTION`=0
+means the geofence does nothing at all. 🔑 **Read these live before every mission — ⛔ never quote
+this table as authority, it went stale once already.**
 
 ---
 
@@ -259,7 +428,7 @@ Safety tests gate capability tests. **S-tests first.**
 
 | ID | Test | Pass criterion |
 |---|---|---|
-| **S1** | **Kill switch in AutoNav** (armed, 0.15 m/s, hit ch8) | Wheels stop immediately, disarms. **Never tested in AutoNav — the ultimate backstop** |
+| **S1** | **Kill switch in AutoNav** (armed, 0.15 m/s, hit **ch12**) | Wheels stop immediately. ⚠️ **PX4 kill ≠ disarm — settle which you mean before re-running.** Pressed in armed AutoNav 09-19 and the rover stopped, but with no latency or tape measurement, so **S1 is INCONCLUSIVE, not passed.** ⛔ the channel is **ch12** (`RC_MAP_KILL_SW`=12, read live) — every "ch8" in the older docs is disputed, see `px4_param_audit.md` §P5 |
 | **S2** | Sensor loss (stop `rover-scan` while driving) | Forward blocked within 0.5 s |
 | **S3** | Yaw loop diagnosis (outdoor, `--yaw 0.2` and `0.4`) | `steering/setpoint` ~0.102 = OPEN loop (no gain fixes it) / ~0.052 = CLOSED (tuning job) |
 | **T1** | Speed tracking, 5 s leg at 0.2 m/s | **Sustained** `/odom` within +/-20% of command |
