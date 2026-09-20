@@ -1,0 +1,25 @@
+[Unit]
+Description=Height-aware /scan_3d from the Gemini depth cloud (runs ALONGSIDE rover-scan)
+# Deliberately parallel to rover-scan, not a replacement. cloud_to_scan.launch.py
+# publishes /scan_3d and NO TF; base_link->camera_link comes from rover-scan's
+# depth_to_scan.launch.py, and /scan there still feeds the live collision reflex.
+# Switching the reflex from /scan to /scan_3d is a separate, deliberate step that
+# happens only once /scan_3d is proven better on real obstacles.
+After=network.target rover-camera.service rover-scan.service
+Wants=rover-camera.service
+Requires=rover-scan.service
+
+[Service]
+Type=simple
+User=roz
+Group=roz
+Environment=HOME=/home/roz
+WorkingDirectory=/home/roz/ros2_ws
+ExecStart=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source /home/roz/ros2_ws/install/setup.bash && exec ros2 launch /home/roz/ros2_ws/launch/cloud_to_scan.launch.py'
+Restart=always
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

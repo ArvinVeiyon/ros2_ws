@@ -6,8 +6,14 @@
 #   rover-camera.service      Orbbec Gemini 336L wrapper (IMU enabled)   [enabled]
 #   rover-scan.service        depth -> /scan bridge + base_link TF       [enabled]
 #   rover-odometry.service    VESC ERPM -> /odom + odom->base_link TF    [enabled]
+#   rover-scan-3d.service     depth cloud -> /scan_3d (height-aware)      [enabled]
 #   rover-autonav-mode.service  px4_ros2 custom mode "AutoNav"           [enabled]
 #   rover-ekf-bridge.service  /odom -> EKF2 external vision velocity     [NOT enabled]
+#   rover-nav2.service        Nav2 forward-only stack (6 servers)        [NOT enabled]
+#
+# rover-nav2 is deliberately NOT enabled at boot either: it is the thing that
+# publishes /cmd_vel, so it is the thing that moves the rover. Start it for a
+# run and stop it after:  sudo systemctl start rover-nav2
 #
 # rover-ekf-bridge is deliberately NOT enabled at boot. With the wheels off the
 # ground it feeds EKF2 velocity the vehicle is not actually achieving, which drives
@@ -84,12 +90,24 @@ mkunit rover-ekf-bridge.service \
   "microxrce-agent.service rover-odometry.service" \
   "ros2 run rover_ekf_bridge rover_ekf_bridge"
 
+# Units too specific for mkunit() are kept as whole files next to this script and
+# copied verbatim. Added 2026-09-20: rover-scan-3d (custom Requires=) and
+# rover-nav2 (Environment= params override, Restart=on-failure). Neither is
+# enabled below -- scan-3d is enabled separately, nav2 is manual-start only.
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+for f in "$here"/*.service; do
+  [[ -e $f ]] || continue
+  install -m 0644 "$f" /etc/systemd/system/
+  echo "  copied $(basename "$f")"
+done
+
 systemctl daemon-reload
 
-echo "enabling boot-start units (ekf-bridge intentionally excluded)..."
-systemctl enable rover-camera.service rover-scan.service \
+echo "enabling boot-start units (ekf-bridge and nav2 intentionally excluded)..."
+systemctl enable rover-camera.service rover-scan.service rover-scan-3d.service \
                  rover-odometry.service rover-autonav-mode.service
 systemctl disable rover-ekf-bridge.service 2>/dev/null || true
+systemctl disable rover-nav2.service 2>/dev/null || true
 
 echo
 echo "done. units installed but NOT started -- stop your manual setsid nodes first,"

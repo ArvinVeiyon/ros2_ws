@@ -323,6 +323,7 @@ yaml is live.
 | `rover-scan-3d` | enabled, **inactive** | height-aware `/scan_3d`, runs *alongside* `rover-scan` |
 | `rover-odometry` | ✅ enabled | VESC eRPM → `/odom` + `odom→base_link` TF |
 | `rover-autonav-mode` | ✅ enabled | PX4 custom mode "AutoNav" + the collision reflex |
+| `rover-nav2` | **disabled on purpose** | the six Nav2 servers — this is what publishes `/cmd_vel`, i.e. what MOVES the rover. Manual start per run (C6b) |
 | `rc_control_node` | ✅ enabled | RC-channel actions: camera switch, shutdown |
 | `microxrce-agent` | ✅ enabled | uXRCE-DDS bridge on `ttyAMA4` |
 | `mavlink.router` | ✅ enabled | MAVLink fan-out, incl. `tcp:5760` |
@@ -441,6 +442,37 @@ perception loss fails safe.
 | `collision.scan_topic` | `/scan` | ⏭ `/scan_3d` is the candidate, not yet switched |
 
 Internal limits: `kMaxSpeed 0.8 m/s`, `kMaxYawRate 1.0 rad/s`, `kCmdVelTimeout 0.5 s`.
+
+## C6b. `rover-nav2` — the Nav2 stack *(added 2026-09-20)*
+
+Six stock Nav2 C++ servers, launched by `rover_nav2/nav2_forward.launch.py`: `controller_server`
+(DWB), `planner_server`, `behavior_server`, `bt_navigator`, `velocity_smoother` and
+`lifecycle_manager`. Numbered C6b rather than C7 so the existing C7-C10 references stay valid.
+
+⛔ **Not enabled at boot, deliberately — same policy as `rover-ekf-bridge`.** This unit is what
+publishes `/cmd_vel`, so it is what moves the rover. Start it for a run and stop it after:
+
+```
+sudo systemctl start rover-nav2     # on the floor, for a run
+sudo systemctl stop  rover-nav2
+```
+
+🔑 **A restart of this unit IS the "clear both costmaps" step** — both costmaps come up empty.
+Stale marks from a previous run are why a run deviates from its first cycle.
+
+| Property | Value | Why |
+|---|---|---|
+| params | `nav2_forward_flat.yaml` via `Environment=NAV2_PARAMS=` | the armed-run config. ⛔ never `nav2_forward.yaml` armed — voxel layer active = sustained max-rate spin (09-17) |
+| override | `sudo systemctl edit rover-nav2` → `Environment=NAV2_PARAMS=/path.yaml` | one drop-in, no file edit |
+| rebuild needed? | **no** | the installed config path is a symlink into `src/`; edit the YAML, restart the unit |
+| `Restart=` | `on-failure` | a crash stops the rover anyway (C6 `kCmdVelTimeout` 0.5 s) and the replacement has no goal. A clean exit means the operator stopped it |
+| `Wants=` | camera, scan, odometry, autonav-mode | Nav2 needs `/scan`, `/odom` and the `odom` TF frame or both costmaps sit at "Timed out waiting for transform" |
+
+⛔ **DWB reads critic `scale` and `sim_time` at initialise** — a live `ros2 param set` does nothing.
+Edit the YAML, restart the unit.
+
+Unit file lives at `ros2_ws/systemd/rover-nav2.service`; `install_rover_units.sh` copies it and every
+other whole-file unit in that directory, then leaves it disabled.
 
 ## C7. `rc_control_node`
 

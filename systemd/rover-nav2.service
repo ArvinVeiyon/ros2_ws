@@ -1,0 +1,46 @@
+[Unit]
+# Nav2 forward-only autonomy stack: controller_server (DWB), planner_server,
+# behavior_server, bt_navigator, velocity_smoother, lifecycle_manager.
+# All six are stock Nav2 C++ nodes; nothing here is ours except the params file.
+#
+# ⛔ NOT ENABLED AT BOOT, ON PURPOSE — same policy as rover-ekf-bridge.
+# This stack is what publishes /cmd_vel, i.e. it is what MOVES the rover.
+# Start it by hand for a run, on the floor, and stop it afterwards:
+#     sudo systemctl start rover-nav2
+#     sudo systemctl stop  rover-nav2
+#
+# 🔑 A restart of this unit is also the costmap clear — both costmaps come up
+# empty, which is the "clear both costmaps before every run" step.
+#
+# Params default to nav2_forward_flat.yaml, the ARMED-RUN config (voxel layer
+# OUT). ⛔ Never point this at nav2_forward.yaml for an armed run: with the
+# voxel layer active on 2026-09-17 Nav2 commanded a sustained max-rate spin.
+# The installed path is a symlink to src/, so editing the YAML and restarting
+# this unit is enough — no colcon build. To point at a different file:
+#     sudo systemctl edit rover-nav2      ->  [Service] Environment=NAV2_PARAMS=/path/to.yaml
+#
+# Restart=on-failure, not always: if Nav2 dies mid-run the rover stops anyway
+# (autonav_mode zeroes the setpoint after a 0.5 s /cmd_vel watchdog), and the
+# replacement comes up with no goal, so it stays stopped. A clean exit is
+# treated as "the operator shut the stack down" and is not restarted.
+Description=Nav2 forward-only autonomy stack (DWB controller, planner, BT navigator, smoother)
+After=network.target rover-camera.service rover-scan.service rover-odometry.service rover-autonav-mode.service
+Wants=rover-camera.service rover-scan.service rover-odometry.service rover-autonav-mode.service
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=roz
+Group=roz
+Environment=HOME=/home/roz
+Environment=NAV2_PARAMS=/home/roz/ros2_ws/install/rover_nav2/share/rover_nav2/config/nav2_forward_flat.yaml
+WorkingDirectory=/home/roz/ros2_ws
+ExecStart=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source /home/roz/ros2_ws/install/setup.bash && exec ros2 launch rover_nav2 nav2_forward.launch.py params_file:="$NAV2_PARAMS"'
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
