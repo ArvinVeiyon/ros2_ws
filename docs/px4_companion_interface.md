@@ -128,3 +128,70 @@ All line numbers are `src/modules/uxrce_dds_client/dds_topics.yaml`. **31 out, 3
 * Companion mode: `~/ros2_ws/src/autonav_mode/include/autonav_mode/mode.hpp`
 * Companion role, gap analysis and build ladder: `autonomy_plan.md` §4
 * Safety requirements incl. **R5.6** (mission-mode gap): `rover_autonav_requirements.md` §3
+
+---
+
+## 9. Position injection — making PX4 know where it is (indoor missions)
+
+> Added 2026-09-20. **Additive:** this changes no goal and no ladder; it records the path and its
+> preconditions. ⚠️ Nothing here is a recommendation to write a parameter.
+
+### 9.1 The switch is a parameter, not a design property
+
+* `EKF2_EV_CTRL` is a **bitmask** — `src/modules/ekf2/params_external_vision.yaml:8-15`:
+  * **bit 0 = horizontal position** · bit 1 = vertical position · **bit 2 = 3D velocity** · bit 3 = yaw
+* **Read live 2026-09-20: `EKF2_EV_CTRL` = 4** ⇒ **bit 2 only — 3D velocity. Horizontal position
+  fusion is OFF.**
+* ⇒ 🔑 **"PX4 never knows where it is" is a CONFIGURATION, not an immutable design property.**
+  The bridge sends velocity because PX4 is set to accept only velocity.
+  * ⚠️ `autonav_reference.md` phrases this as "by design" — read that as *by current configuration*.
+* ✅ **This was already known and recorded** — `setup_manual.md` §A7 lines 102 and 197 carry
+  `EKF2_EV_CTRL`=4 with **`9` (pos + yaw) named as the VIO target**. ⛔ Do not present it as new.
+* `EKF2_AGP_CTRL` = **0** (read live) — the `aux_global_position` route is switched off as well.
+
+### 9.2 🔴 The constraint that governs this
+
+* **`EKF2_*` parameters are SHARED WITH THE DRONE** — one FC, one estimator configuration.
+* ⇒ changing `EKF2_EV_CTRL` changes the **drone's** EKF too.
+* ⛔ **Operator decision only. Never write a vehicle parameter without an explicit yes.**
+* → `setup_manual.md` §A7 for the changelog and the `RO_*` vs `EKF2_*` split.
+
+### 9.3 ⛔ VIO is NOT localization — do not substitute one for the other
+
+* **VIO gives RELATIVE motion.** It drifts without bound and has no absolute reference.
+* **"Pick a map and execute a mission on it" needs ABSOLUTE pose on that map** — that is
+  *localization*, a different algorithm with different failure modes.
+* ⇒ **Feeding VIO alone to PX4 produces a confident position that slowly walks away from reality.**
+  The mission executes correctly against coordinates that mean progressively less.
+* 🔴 **Localization is the current blocker** — 0 accepted of 20 on the map's own bag; it fails at
+  geometry, not appearance. → `indoor_mapping_slam` §17.
+* 🔑 **Order: localization first, VIO second.** VIO reduces drift *between* fixes; it does not
+  replace the fixes.
+
+### 9.4 The frame problem any QGC map layer must solve
+
+* A QGC mission item is **lat/lon**. A SLAM map is **metres in a `map` frame**. They do not meet on
+  their own.
+* Two honest options — **pick one deliberately**:
+  * **Anchor the map** — give the SLAM map a geographic origin and heading, so lat/lon waypoints
+    become meaningful indoors and **one QGC UI serves indoor and outdoor**. 🔑 The anchor need not
+    be geographically *accurate*, only *consistent*.
+  * **Do not use missions indoors** — send goal poses in the `map` frame (the Nav2 way) and accept
+    two interaction models in one UI.
+* ⚠️ **Outdoors, SLAM is not needed for position — GPS answers it.** An outdoor map layer is for
+  **obstacle memory**, i.e. the **B2 Surveyed** variant in `autonomy_plan.md` §4 — *not*
+  localization. 🔑 Indoor map = *where am I*; outdoor map = *what did I see last time*.
+
+### 9.5 Order of work — what must be true, in sequence
+
+1. **Localization working** on the existing map. 🔴 the current blocker; everything else waits.
+2. **Anchoring scheme decided** — map origin, or map-frame goals (§9.4).
+3. **Companion publishes pose** on `/fmu/in/vehicle_visual_odometry` (`dds_topics.yaml:184`) or
+   `/fmu/in/aux_global_position` (`:205`). ✅ both already bridged — no firmware change.
+4. **`EKF2_EV_CTRL` gains bit 0** — ⛔ operator decision, and it touches the drone (§9.2).
+5. **`eph` falls below `COM_POS_FS_EPH`** (5 m) ⇒ armed AutoNav and `AUTO_MISSION` become available.
+6. **QGC layer last** — it is UI over a capability that must already exist.
+
+* ⚠️ **No VIO is running today.** `rgbd_odometry` / `icp_odometry` are installed and have been run
+  here; the blockers are CPU and the plate-in-frame problem. ⛔ Do not say "we can't do VIO" — say
+  what it costs.

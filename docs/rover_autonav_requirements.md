@@ -57,6 +57,11 @@ Orbbec 336L ──USB3──► OrbbecSDK_ROS2 ─depth─► depthimage_to_lase
 - Feed EKF2 via px4_ros2 `LocalPositionMeasurementInterface` (lib pinned release/1.17 @ 4a3370f) so
   PX4 local position becomes valid indoors. PX4 side: enable EV fusion (`EKF2_EV_CTRL=4`, verified
   working), GPS absent indoors anyway.
+  🔑 **`4` is bit 2 = VELOCITY ONLY — it does not give PX4 a position.** Horizontal-position fusion
+  is bit 0; `setup_manual.md` §A7 names **`9`** (pos + yaw) as the VIO target. ⛔ `EKF2_*` is shared
+  with the drone ⇒ operator decision. ⛔ **VIO ≠ localization** — VIO drifts without an absolute
+  reference, so it cannot by itself support a mission on a picked map.
+  → `px4_companion_interface.md` §9.
 - ~~`slam_toolbox` (apt, **2.8.5 installed**) over depth-derived `/scan` provides `map→odom` correction + the global map.~~
   🔴 **SUPERSEDED 2026-08-01 — the map/localization source is RTAB-Map, not slam_toolbox.**
   `slam_toolbox` does 2D scan matching and 92° of view gives it too little overlap; RGB-D visual SLAM

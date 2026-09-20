@@ -195,7 +195,11 @@ RO_YAW_RATE_LIM   85.9        ⚠ deg/s, NOT rad/s  (= 1.4993 rad/s)
 > corrections, which is **unmeasured** (§9). Adding VIO is not the fix for anything currently known
 > to be broken.
 >
-> ⚠️ **PX4 never knows where it is, by design.** `rover-ekf-bridge` feeds the FC **velocity only**,
+> ⚠️ **PX4 never knows where it is — by current CONFIGURATION, not by immutable design.**
+> 🔑 **2026-09-20: `EKF2_EV_CTRL`=4 = bit 2 only = 3D velocity; horizontal-position fusion is OFF.**
+> Adding bit 0 is what would let PX4 fuse an external position — ⛔ but `EKF2_*` is **shared with the
+> drone**, so it is an operator decision. Path, preconditions and the VIO-is-not-localization
+> warning: `px4_companion_interface.md` §9. `rover-ekf-bridge` feeds the FC **velocity only**,
 > via `LocalPositionMeasurementInterface`. Measured 2026-08-10 with the bridge stopped:
 > `xy_valid false`, `v_xy_valid false`, `heading_good_for_control false`, `dead_reckoning true`.
 > Position lives in ROS, not in the flight controller. Do not look for it there.

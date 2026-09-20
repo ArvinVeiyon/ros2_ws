@@ -306,6 +306,10 @@ insufficient; it needs no firmware change.
 
 #### What must be ADDED to PX4 — the bridge list
 
+> 🔗 **Indoor position injection** — feeding PX4 a pose so `AUTO_MISSION` works indoors, the
+> `EKF2_EV_CTRL` bitmask, the map-anchoring choice for a QGC SLAM layer, and why **VIO is not
+> localization**: `px4_companion_interface.md` §9. (Outdoor scope here is unchanged.)
+
 Everything below is a `dds_topics.yaml` entry in the PX4 tree
 (`src/modules/uxrce_dds_client/dds_topics.yaml`), and all of it is **read-only telemetry out** —
 none of it gives the companion new authority, so none of it changes the safety argument.
