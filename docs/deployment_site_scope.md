@@ -111,3 +111,70 @@ the weight of an existing one.
 * Case A / Case B, `EKF2_EV_CTRL`, position injection: `px4_companion_interface.md` §9
 * Relocalization failure: `memory/project_indoor_mapping_slam.md` §17
 * Sensor envelope and FOV: `px4_companion_interface.md` §4, `rover_geometry.md`
+
+---
+
+## 6. Aligning the current work — cross-checked against comparable systems
+
+> Added 2026-09-20 after an operator challenge: *"from the beginning I told you do not rely on
+> odometry."* The record supports that. This section records the cross-check and the realignment.
+> ⛔ Still additive — no goal is deleted or renumbered here.
+
+### 6.1 What comparable systems actually do
+
+* **Warehouse / site AMRs localize on a 2D LiDAR**, matching live scans against an occupancy grid.
+  Wheel odometry is fused in as the **motion prior between scans** — ⛔ **not as the position source**.
+* **Depth cameras are used for the obstacle class LiDAR misses** — forklift tines, overhanging or
+  cantilevered loads, debris lying flat on the floor.
+* ⇒ 🔑 **Industry split: LiDAR = localization + 360° safety. Depth camera = 3D forward obstacles.**
+* ✅ **Our own `autonomy_plan.md` §2 already says exactly this** — *"Lidar = safe while
+  turning/reversing, and robust geometric SLAM"*. The plan was right; the hardware did not follow.
+
+### 6.2 What the record shows
+
+* 🔴 **The STL-19 is NOT FITTED — it was allocated to the drone** (`autonav_reference.md:85`).
+* 🔴 `autonav_reference.md:317`: the depth camera covers a 92° forward wedge; **"the other 268° is
+  unmeasurable, permanently, until a 360° lidar is fitted. That single fact drives most of §11."**
+* ⇒ **The odometry-heavy architecture is a CONSEQUENCE of the missing LiDAR, not a design choice
+  that was argued for on merit.** The operator's original instruction — do not rely on odometry —
+  matches standard practice. It could not be followed because the sensor went to the other vehicle.
+
+### 6.3 What of the odometry work was, and was not, wasted
+
+* ✅ **NOT wasted — odometry is required regardless.** In the corrected error model (§4) odometry is
+  precisely what carries the estimate **between absolute fixes**, and that is the role industry
+  fuses it in. A calibrated `erpm_to_ms` and the speed-dependent error curve are needed either way.
+  ⛔ **Do not re-open the scale.** → `rover_odometry`
+* ⚠️ **Limited transfer — the odom-frame Nav2 tuning.** DWB critic weights tuned with
+  `global_frame: odom` and no map will need re-tuning once a `map` frame exists. Finish T3 to
+  *good enough*, then stop; ⛔ do not polish it.
+* 🔴 **A real design problem, worth naming:** `rover-ekf-bridge` feeds the EKF **from `/odom`**, so
+  the controller regulates against its own under-read — **circular feedback sitting in the safety
+  path**. → `autonav_reference.md` §10. ⛔ This is not fixed by better odometry calibration.
+
+### 6.4 The realignment
+
+* 🔑 **The product is Case B on a site (§1). Its blocker is localization, and the industry answer
+  for this exact venue is a 2D LiDAR.**
+* 🔴 **Visual relocalization is failing 0 of 20 on the map's own bag, at the GEOMETRY stage.**
+  ⛔ Continuing to tune it is optimizing the path the industry does **not** take for this venue.
+* ⇒ **Highest-leverage move: fit a 360° LiDAR** — recover the STL-19 or buy a second unit.
+  It addresses **four** open problems at once:
+  * **localization** — geometric scan matching, robust on concrete and racking where visual
+    features are sparse or repetitive (§4);
+  * **the 268° blind arc** — the side-approaching forklift, currently an envelope limit (§4);
+  * **reverse and pivot safety** — the recoveries deliberately removed from M2;
+  * **the "lidar owns `/scan`" path is already designed** — `setup_manual.md` §269 / §F5, with
+    `depth_to_scan` remapping to `/scan_depth`.
+* ✅ **The depth camera then moves to its correct role** — 3D forward obstacles, the class LiDAR
+  misses, which is what `autonomy_plan.md` §2 always said it was for.
+* ⚠️ **It does not solve everything.** A 2D LiDAR still cannot see **negative obstacles** (§4) —
+  potholes and dock edges remain an open scope decision either way.
+
+### 6.5 Immediate implication for what is on the bench
+
+* **T3 (`ObstacleFootprint.scale`)** — finish to a working value, take the 3 runs, **then stop.**
+  It is M2 local avoidance, genuinely reusable as a *chain*; its odom-frame *tuning* is not.
+* ⛔ **Do not start new work that assumes odometry is the position source.**
+* ⏭ **Next decision is a hardware one, not a software one:** LiDAR, yes or no. Everything in §6.4
+  waits on it.
