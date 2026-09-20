@@ -138,8 +138,9 @@ All line numbers are `src/modules/uxrce_dds_client/dds_topics.yaml`. **31 out, 3
 
 ### 9.1 The switch is a parameter, not a design property
 
-* `EKF2_EV_CTRL` is a **bitmask** — `src/modules/ekf2/params_external_vision.yaml:8-15`:
-  * **bit 0 = horizontal position** · bit 1 = vertical position · **bit 2 = 3D velocity** · bit 3 = yaw
+* `EKF2_EV_CTRL` is a **bitmask** — `src/modules/ekf2/params_external_vision.yaml:8-15`, and
+  **independently confirmed by the PX4 Guide's *PX4 ROS 2 Navigation Interface* page**:
+  * **bit 0 = horizontal position** · bit 1 = vertical position · **bit 2 = velocity** · bit 3 = yaw
 * **Read live 2026-09-20: `EKF2_EV_CTRL` = 4** ⇒ **bit 2 only — 3D velocity. Horizontal position
   fusion is OFF.**
 * ⇒ 🔑 **"PX4 never knows where it is" is a CONFIGURATION, not an immutable design property.**
@@ -207,13 +208,24 @@ VIO estimates pose *"relative to a local starting position"*.
    relative to the start point, the standard PX4 route. 🔴 **Case B** needs relocalization on the
    saved map working first; that is the current blocker.
 2. **Anchoring scheme decided** — map origin, or map-frame goals (§9.4).
-3. **Companion publishes pose** on `/fmu/in/vehicle_visual_odometry` (`dds_topics.yaml:184`) or
-   `/fmu/in/aux_global_position` (`:205`). ✅ both already bridged — no firmware change.
-   * 🔑🔑 **PUBLISH THE MAP-RELATIVE POSE FROM RELOCALIZATION, NOT RAW VIO.** Same topic, different
-     source. ⛔ Raw VIO would give PX4 a **confidently drifting** position — it is *"relative to a
-     local starting position"*, which is Case A, not our Case B.
-   * ⚠️ **VIO replaces ENCODERS, not GPS.** A drone needs it because it has no wheels; this rover
-     already has the incremental half. → `deployment_site_scope.md` §7.2.
+3. **Companion publishes pose — through the interface the bridge ALREADY USES.** ✅ No new node, no
+   new topic, no firmware change. → PX4 Guide, *ROS 2 → PX4 ROS 2 Navigation Interface*.
+   * 🔑🔑 **`rover-ekf-bridge` already uses `px4_ros2::LocalPositionMeasurementInterface`.** The
+     `LocalPositionMeasurement` struct carries **`position_xy` + `position_xy_variance`** alongside
+     the `velocity_xy` / `velocity_z` fields it fills today — all optional, each with a variance.
+     ⇒ **feeding a map-relative pose = populating two more fields in the node we already run.**
+   * Pose frames `LocalNED` · `LocalFRD` · `Unknown`; velocity frames add `BodyFRD` (what the bridge
+     sends today).
+   * 🔑🔑 **PUBLISH THE MAP-RELATIVE POSE FROM RELOCALIZATION, NOT RAW VIO.** ⛔ Raw VIO would give
+     PX4 a **confidently drifting** position — it is *"relative to a local starting position"*,
+     which is Case A, not our Case B.
+   * ⚠️ **A WELL-DEFINED VARIANCE IS MANDATORY**, not optional decoration: *"If a measurement value
+     is provided, its associated variance value is well defined"* and *"Values do not have a NAN"* —
+     bad input throws **`NavigationInterfaceInvalidArgument`**. ✅ This is the right design: after a
+     long unmatched stretch, hand PX4 a **larger variance**, not a confident lie.
+   * **Global/lat-lon route:** `GlobalPositionMeasurementInterface` (`lat_lon`, `altitude_msl`,
+     variances), gated by **`EKF2_AGPn_CTRL`** — bit 0 horizontal, bit 1 vertical.
+   * ⚠️ **VIO replaces ENCODERS, not GPS.** → `deployment_site_scope.md` §7.2.
 4. **`EKF2_EV_CTRL` gains bit 0** — ⛔ operator decision, and it touches the drone (§9.2).
 5. **`eph` falls below `COM_POS_FS_EPH`** (5 m) ⇒ armed AutoNav and `AUTO_MISSION` become available.
 6. **QGC layer last** — it is UI over a capability that must already exist.
