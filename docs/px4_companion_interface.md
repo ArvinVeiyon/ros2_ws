@@ -188,6 +188,43 @@ VIO estimates pose *"relative to a local starting position"*.
 * ⚠️ Case A remains the cheaper route to *an* indoor mission if the product definition ever relaxes —
   ⛔ but it is not what "pick a map" in §9.4 requires, and it is not the product.
 
+### 9.3b What the PX4 VIO page adds — checked against our source and FC, 2026-09-21
+
+📗 PX4 Guide → *Computer Vision → Visual Inertial Odometry*. ⚠️ The page is written for **MAVROS**
+(`/mavros/odometry/out`); we use **px4_ros2 + DDS**. The **transport differs, the parameters do not.**
+
+* 🔴🔴 **GPS COEXISTENCE IS EXPLICITLY WARNED AGAINST.** PX4: *"This is really difficult, because
+  when they disagree it will confuse the EKF. From testing it is more reliable to just use vision
+  velocity."*
+  ⇒ ⛔ **This lands on `deployment_site_scope.md` §3 "GPS is an AID".** The naive plan — fuse GPS
+  where available, fall back to vision — is the exact case PX4 says confuses the estimator.
+  **Design the handover deliberately (arbitrate, don't blend), or pick one source per area.**
+  ⚠️ `EKF2_GPS_CTRL` reads **7** (fusion fully enabled) **with no GPS fitted** — worth examining
+  alongside this.
+* ✅ **Our bridge source confirms the position route exactly.** `rover_ekf_bridge/src/main.cpp:25`
+  constructs with `PoseFrame::Unknown, VelocityFrame::BodyFRD`; lines 63–70 fill `velocity_xy`,
+  `velocity_z` and their variances — and **never `position_xy`**.
+  ⇒ the change is **add `measurement.position_xy` + `position_xy_variance`, and move `PoseFrame`
+  from `Unknown` to `LocalNED`/`LocalFRD`.** Nothing else moves.
+* ⚠️ **`EKF2_EV_POS_X/Y/Z` all read 0.0 — correct TODAY, wrong LATER.** They are *"X position of VI
+  sensor focal point in body frame … relative to vehicle centre of gravity"*. Today the velocity
+  comes from **wheel odometry at the body frame**, so zero is right. 🔑 **The moment a
+  CAMERA-derived pose is fed, these must be set from the measured mount** — and we already have the
+  numbers from G0 (`front_overhang` 0.337, `cam_z` 0.305). ⛔ Do not enable position fusion without
+  setting them: an unmodelled lever arm turns yaw rate into spurious lateral velocity.
+* ⚠️ **`EKF2_EV_DELAY` reads 0.0 — untuned.** PX4: estimate the IMU-to-vision offset from logs, then
+  *"vary the parameter to find the value that yields the lowest EKF innovations during dynamic
+  manoeuvres."* A real bring-up task, not a default.
+* ⚠️ **`EKF2_HGT_REF`** — PX4 says *"Set to Vision to use the vision as the reference sensor for
+  altitude estimation"*. Low priority on a ground rover, but it is not currently Vision.
+* 🔑 **Bring-up procedure worth copying:** *"Yaw the vehicle until the quaternion of the ODOMETRY
+  message is very close to a unit quaternion (w=1, x=y=z=0)"* — aligns body frame to the external
+  pose frame. Velocities must be **FRD body frame**, which is what we already send.
+* ⚠️ **Vibration:** PX4 warns the T265 is *"very sensitive to high-frequency vibrations"* and
+  advises soft-mounting. ⚠️ Relevant to hard wheels on concrete and potholes — ⛔ untested here.
+* ✅ **The page says NOTHING about relocalization or mapping.** Confirms from the vendor's own
+  documentation that **VIO is odometry, not map localization** (§9.3).
+
 ### 9.4 The frame problem any QGC map layer must solve
 
 * A QGC mission item is **lat/lon**. A SLAM map is **metres in a `map` frame**. They do not meet on
