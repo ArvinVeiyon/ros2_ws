@@ -64,11 +64,26 @@ the weight of an existing one.
   * ⛔ Depth FOV is **H90° forward only** — nothing to the sides or behind (`px4_companion_interface.md` §4).
   * ⇒ this is a **hard envelope limit**, not a tuning problem. Either accept it as an operating
     constraint (segregated route, speed limit) or add sensing. → A4 is marked "✅ forward only".
-* ⚠️ **Scale multiplies drift.** A site is 10–100× a house in area, so distance between
-  relocalizations grows and VIO drift with it. **Relocalization reliability matters more here, not less.**
-* ⚠️ **Featureless or repetitive scenes are the visual-SLAM failure mode.** Flat concrete aprons,
-  identical racking aisles, blank walls. ⚠️ This may make site relocalization **harder** than the
-  house case that is already failing — ⛔ do not assume a bigger map is an easier map.
+* ⛔ **CORRECTED 2026-09-20 (operator).** An earlier draft said *"scale multiplies drift"*. **Wrong.**
+  🔑 **Relocalization is an ABSOLUTE fix, not an increment.** Each successful match resets error to
+  the match accuracy; it does **not** accumulate across matches. That is how the stack is already
+  built — our `/odom` is the incremental part, RTAB-Map supplies the `map→odom` correction on top.
+  * ⇒ **Error model: `match accuracy` + `drift since the LAST SUCCESSFUL match`. Bounded, not growing.**
+  * ⇒ ⛔ **Site size on its own multiplies nothing.** A large site with good map coverage throughout
+    is fine; a small site with one featureless stretch is not.
+* ⚠️ **So the real variable is MATCH RATE AND COVERAGE, not area.** The question is never "how big
+  is the site" but **"what fraction of the route can be matched, and how long is the longest gap?"**
+  * Size the odometry budget against **the longest unmatched stretch**, not the route length.
+* 🔴 **Perceptual aliasing is the repetitive-site risk — and it is worse than no match.** Identical
+  racking aisles and repeated bays can produce a **confident match on the WRONG place**. A missed
+  match degrades gracefully into odometry; a false match puts the rover somewhere it is not.
+  ⛔ Do not treat "relocalization succeeded" as self-validating — gate on match quality.
+* ⚠️ **The correction JUMP is itself an operational hazard.** An absolute fix after a long gap
+  arrives as a **pose discontinuity**: `map→odom` steps, and the global costmap and plan step with
+  it. ⚠️ Unmeasured here. Decide what the controller should do during a large jump **before**
+  running a site route.
+* ⚠️ **Featureless expanses** — flat concrete aprons, blank walls — are where the gaps come from.
+  ⛔ Do not assume a bigger map is an easier map, but the reason is **coverage**, not accumulation.
 * ⚠️ **Lighting transitions.** Driving through a roller door is a large, fast exposure swing —
   a known visual-odometry failure mode. The house case never exercised it.
 * ⚠️ **Weather and surface.** Wet concrete, gravel, standing water. The Orbbec store listing
@@ -85,6 +100,9 @@ the weight of an existing one.
   4. **GPS role** — decide aid-vs-absent before wiring `aux_global_position`.
 * 🔑 **Survey the actual site before designing further.** Surface, lighting, traffic and GPS quality
   are all site facts, and every one of them is currently assumed.
+* 🔑 **The survey's localization question is COVERAGE, not size:** walk the intended route and ask
+  *where can it match, and how long is the longest unmatched stretch?* That number — not the site
+  area — sizes the odometry budget and decides whether the route is viable as drawn.
 
 ## References
 
