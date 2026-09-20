@@ -272,8 +272,9 @@ translate directly into mission constraints:
 #### The PX4 nav interface — what is actually on the wire
 
 Read out of `dds_topics.yaml` in the **flashed** firmware (`a52c38b07d`) on 2026-09-20:
-**32 topics bridged out, 38 in.** ⛔ Anything not in that file needs a firmware change and a
-reflash — check the list before designing around a topic.
+**31 topics bridged out, 38 in** (comment-aware count — line 60 is a *commented-out*
+`vehicle_angular_velocity` entry and must not be counted as live). ⛔ Anything not in that file
+needs a firmware change and a reflash — check the list before designing around a topic.
 
 **What a supervisor can READ today — enough to build S1 with no firmware change:**
 
@@ -302,6 +303,47 @@ Verify before designing on it.
 🔑 **`/fmu/in/aux_global_position` is already bridged in** — the path for feeding an external
 global position to the EKF. Outdoors that is a fallback/augmentation route if GPS alone proves
 insufficient; it needs no firmware change.
+
+#### What must be ADDED to PX4 — the bridge list
+
+Everything below is a `dds_topics.yaml` entry in the PX4 tree
+(`src/modules/uxrce_dds_client/dds_topics.yaml`), and all of it is **read-only telemetry out** —
+none of it gives the companion new authority, so none of it changes the safety argument.
+Field-level justification taken from the `.msg` definitions on 2026-09-20.
+
+⚠️ **Two-sided change.** Adding a topic means rebuild + reflash PX4 **and** rebuilding `px4_msgs` on
+the companion from the same commit. 🔑 A mismatch does **not** raise an error — the topic simply
+never connects. Check both sides after any change here.
+
+**Tier 1 — required before S1 can be written**
+
+| Topic | Key fields | Why the supervisor cannot work without it |
+|---|---|---|
+| `mission_result` | `seq_current`, `seq_total`, `seq_reached`, `finished`, `failure`, `valid`, `warning` | 🔴 **The single most important addition.** Mission progress and completion. Today it is inferred from `position_setpoint_triplet`, which cannot tell you the mission *finished*, *failed*, or was rejected as invalid |
+| `position_controller_status` | `wp_dist`, `xtrack_error`, `acceptance_radius`, `target_bearing` | **Distance to the active waypoint and signed cross-track error.** This is what lets a supervisor tell "deviating around an obstacle" from "lost the plot", and decide whether a pause is near an arrival |
+| `geofence_result` | `geofence_max_dist_triggered`, `geofence_custom_fence_triggered`, `geofence_action` | Lets the supervisor **read PX4's breach state and the action PX4 will take**, instead of duplicating the fence check and racing it |
+
+**Tier 2 — wanted, not blocking**
+
+| Topic | Key fields | Why |
+|---|---|---|
+| `vehicle_angular_velocity` | body rates | ⏭ **Already staged and commented out at line 60 — this one is just an uncomment.** Decouples odometry from the camera gyro |
+| `navigator_mission_item` | `nav_cmd`, `latitude`, `longitude`, `acceptance_radius`, `autocontinue` | The *definition* of the current item, not just its setpoint. Partly redundant with the triplet — take it only if Tier 1 proves insufficient |
+| `rtl_status` | `rtl_type`, `safe_point_index` | Knowing what RTL will actually do **before** the supervisor triggers it |
+
+**⛔ Explicitly NOT needed — do not add these**
+
+* `obstacle_distance` — **already bridged in, and inert.** No rover module consumes it; it is a
+  multicopter path. ⛔ Do not build avoidance on it.
+* `distance_sensor` — already bridged in; it feeds the EKF, it is not an avoidance route for a rover.
+* `sensor_gps` — redundant: `vehicle_gps_position` (type `SensorGps`) is **already bridged out**, so
+  fix type, satellite count and accuracy are available today.
+* `mission` (the whole plan) — large, and unnecessary if Tier 1 is present.
+* `actuator_armed` — `vehicle_status` already carries arming state.
+
+**Not firmware — parameters that must be set before an outdoor mission** (all read live 09-20,
+all currently wrong for outdoor): `COM_LOW_BAT_ACT`=0 (warns only), `GF_ACTION`=0 (geofence does
+nothing), `NAV_RCL_ACT`=1 (Hold, not Return). ⛔ Operator decision each — see §6.
 
 #### Gap list — what does not exist yet
 
