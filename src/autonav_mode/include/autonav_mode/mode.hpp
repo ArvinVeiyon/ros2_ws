@@ -155,7 +155,12 @@ class AutoNavMode : public px4_ros2::ModeBase {
         "/cmd_vel", rclcpp::QoS(1),
         [this](geometry_msgs::msg::Twist::UniquePtr msg) {
           _speed = std::clamp(static_cast<float>(msg->linear.x), -kMaxSpeed, kMaxSpeed);
-          _yaw_rate = std::clamp(static_cast<float>(msg->angular.z), -kMaxYawRate, kMaxYawRate);
+          // FRAME CONVERSION, added 2026-09-19. ROS REP-103 is FLU: +angular.z is
+          // counter-clockwise = LEFT. PX4 is FRD: +yaw rate is clockwise = RIGHT.
+          // This was passed through unnegated, so every Nav2 turn went the WRONG WAY --
+          // proven on the floor: commanded +0.4 rad/s, the rover turned right.
+          // T3 would have steered INTO the obstacle it was routing around.
+          _yaw_rate = std::clamp(-static_cast<float>(msg->angular.z), -kMaxYawRate, kMaxYawRate);
           _last_cmd_time = _node.get_clock()->now();
         });
 

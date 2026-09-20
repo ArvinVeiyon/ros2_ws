@@ -1,14 +1,28 @@
-# ⛔⛔ NOT THE ARMED-RUN CONFIG. This file has voxel_layer ENABLED on both
-# costmaps, and with it active on 2026-09-17 Nav2 commanded a SUSTAINED
-# MAX-RATE SPIN on a rover with no rear or side sensing. It is kept as the
-# 3D/G4 development config.
-#   ARMED RUNS USE  ->  nav2_forward_flat.yaml
-#   ros2 launch rover_nav2 nav2_forward.launch.py \
-#       params_file:=<share>/rover_nav2/config/nav2_forward_flat.yaml
-# Its max_vel_theta (0.5) is also below the 0.67 rad/s this skid-steer can
-# physically produce -- see docs/rover_yaw_response.md.
+# Nav2 -- FORWARD-ONLY autonomy, FLAT SCAN ONLY. THIS IS THE ARMED-RUN CONFIG.
 #
-# Nav2 — FORWARD-ONLY autonomy on the Gemini 336L depth camera alone (no lidar).
+# Derived from nav2_forward.yaml on 2026-09-19. Four differences, all safety:
+#
+#   1. voxel_layer is OUT of both costmap plugin lists. Its parameter blocks are
+#      left in place so G4 can re-enable it by name, but with it ACTIVE on
+#      2026-09-17 Nav2 commanded a SUSTAINED MAX-RATE SPIN.
+#      NEVER ARM WITH voxel_layer ENABLED.
+#   2. PreferForward + Twirling critics added -- see the note at the critic
+#      scales below.
+#   3. max_vel_theta 0.5 -> 1.0 rad/s, and the velocity smoother's theta limit
+#      with it. THEY MUST MOVE TOGETHER.
+#   4. Why 1.0 and not more: autonav_mode clamps |yaw| to kMaxYawRate = 1.0
+#      rad/s in its /cmd_vel callback (mode.hpp), so anything above 1.0 is
+#      silently clipped downstream and the config would be lying.
+#
+# THE REASON FOR (3), measured, not assumed: this skid-steer has a FRICTION
+# DEADBAND. steer < ~0.45 produces NO rotation at all; above it,
+# yaw ~= 7.6 * (steer - 0.40). Minimum achievable yaw rate is ~0.67 rad/s
+# (docs/rover_yaw_response.md). The old 0.5 ceiling was BELOW that floor, so
+# every turn Nav2 asked for was a grind, not a rotation.
+#
+# Original header follows.
+#
+# Nav2 -- FORWARD-ONLY autonomy on the Gemini 336L depth camera alone (no lidar).
 #
 # This config is deliberately narrow. It is not a general Nav2 setup that has
 # been trimmed; it is built around three hard facts about this sensor, and every
@@ -73,16 +87,18 @@ controller_server:
 
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.30
-      movement_time_allowance: 15.0
+      required_movement_radius: 0.15   # 2026-09-19: 0.30 in 15 s is too strict for a rover that slows near the goal
+      movement_time_allowance: 25.0
 
     general_goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.20
+      xy_goal_tolerance: 0.30     # 2026-09-19: odom under-reads ~7% at the low mean speed a goal ends at
       # Loose yaw tolerance on purpose: tightening it makes the rover rotate in
       # place at the goal to "finish", which is exactly the blind manoeuvre this
       # config exists to avoid.
-      yaw_goal_tolerance: 0.50
+      yaw_goal_tolerance: 3.14    # 2026-09-19: ignore final heading. 0.50 made DWB rotate IN PLACE at
+                                  # the goal -- the one manoeuvre this rover cannot do -- so it stalled
+                                  # and the progress checker aborted 0.24 m short after a GOOD avoidance.
       stateful: True
 
     FollowPath:
@@ -94,15 +110,19 @@ controller_server:
       # so badly that any limit compared against it permitted far more speed
       # than intended.
       min_vel_x: 0.0            # NO REVERSE -- nothing sees behind the rover
-      max_vel_x: 0.25
-      max_speed_xy: 0.25
+      max_vel_x: 0.35     # 2026-09-19: operator asked for a little more throttle
+      max_speed_xy: 0.35
       min_speed_xy: 0.0
       min_vel_y: 0.0
       max_vel_y: 0.0
-      # Yaw is kept modest because the FC yaw-rate loop is still under
-      # investigation (it ran ~21x command on 2026-07-29). RO_YAW_RATE_P is at
-      # 0.05 which heavily de-risks it, but this is not yet a trusted axis.
-      max_vel_theta: 0.5
+      # CORRECTED 2026-09-19. The old note here said yaw was "kept modest"
+      # because the ~21x runaway of 2026-07-29 was unexplained and
+      # RO_YAW_RATE_P was 0.05. Both are out of date: the runaway was
+      # diagnosed as INTEGRAL WINDUP ACROSS THE FRICTION DEADBAND and killed
+      # by RO_YAW_RATE_I = 0 (do NOT restore it), and P reads 0.08 on the FC.
+      # 0.5 rad/s was not "modest", it was BELOW the 0.67 rad/s the vehicle can
+      # actually produce -- the rover ground in place instead of turning.
+      max_vel_theta: 0.7     # 2026-09-19: it slammed to the 1.0 clamp on 121/133 samples and cut the corner
       min_speed_theta: 0.0
       acc_lim_x: 0.5
       acc_lim_theta: 1.0
@@ -112,15 +132,43 @@ controller_server:
       vx_samples: 12
       vy_samples: 1
       vtheta_samples: 20
+      # 2026-09-19 INVESTIGATION (reverted to 2.0 -- the fix is NOT yet known):
+      # 2.0 s x 0.25 m/s = a 0.50 m horizon, but the global
+      # plan around an obstacle does not diverge until ~0.9-1.1 m ahead. DWB
+      # therefore scored 'straight' as optimal, drove until the collision reflex
+      # blocked it at 0.69 m, and the goal aborted on 'failed to make progress'.
+      # Tried 4.0 (0.88 m reach) and 6.0: DWB still chose a DEAD STRAIGHT
+      # trajectory and avoided the obstacle by SLOWING DOWN instead of turning
+      # (chosen speed fell to ~0.14 m/s). So the horizon is not the whole story.
+      # NB sim_time is read at initialise -- a runtime param set does NOT apply.
       sim_time: 2.0
       linear_granularity: 0.05
       angular_granularity: 0.025
       transform_tolerance: 0.3
       short_circuit_trajectory_evaluation: True
 
-      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign",
-                "PathAlign", "PathDist", "GoalDist"]
+      # 2026-09-19 (evening): PreferForward + Twirling REMOVED for this test.
+      # They were added the same morning for blocker 3 and never validly tested --
+      # every attempt used a runtime param set, which DWB ignores. This is the
+      # stock critic set, i.e. the constraint I introduced, lifted.
+      # 2026-09-19 (late): ObstacleFootprint ADDED after a BODY-SIDE COLLISION.
+      # BaseObstacle scores only the robot's CENTRE POINT against the costmap --
+      # it plans as if the rover had no length and no width. The centre cleared
+      # the obstacle; the 0.73 m body, swinging its 0.385 m REAR OVERHANG as it
+      # turned back toward the goal, did not. ObstacleFootprint scores the actual
+      # footprint polygon swept along each trajectory, which is what this rover
+      # needs: it has NO SIDE SENSING, so the reflex cannot catch a flank strike.
+      # 2026-09-19 (late): PreferForward RE-ADDED at 15 after a pivot-in-place
+      # failure (159/260 samples rotating, 0.14 m travelled, goal aborted).
+      # THE TWO CRITICS DO DIFFERENT JOBS AND MUST NOT BE LUMPED TOGETHER:
+      #   PreferForward penalises ROTATING IN PLACE and REVERSING  <- the guard we need
+      #   Twirling      penalises ALL yaw, including the useful arc <- this was what
+      #                 stopped every turn; it stays OUT.
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "ObstacleFootprint",
+                "GoalAlign", "PathAlign", "PathDist", "GoalDist", "PreferForward"]
       BaseObstacle.scale: 0.02
+      ObstacleFootprint.scale: 32.0
+      PreferForward.scale: 15.0       # moderate: enough to forbid the pivot, not enough to forbid arcs   # weighted with the path critics (32/24), not token like BaseObstacle
       PathAlign.scale: 32.0
       PathAlign.forward_point_distance: 0.20
       GoalAlign.scale: 24.0
@@ -130,6 +178,16 @@ controller_server:
       RotateToGoal.scale: 32.0
       RotateToGoal.slowing_factor: 5.0
       RotateToGoal.lookahead_time: -1.0
+      # ADDED 2026-09-19 -- blocker 3: DWB will command in-place rotation when
+      # it cannot go forward, and this rover has NO rear or side sensing, so a
+      # spin drives it through space nothing on it can see. Both critics are
+      # stock dwb_critics plugins, already built here.
+      #   PreferForward penalises trajectories with |x| < strafe_x while
+      #   |theta| > strafe_theta -- i.e. rotating on the spot -- and anything
+      #   with x < 0. Twirling penalises |theta| generally.
+      # These are FIRST-CUT weights, deliberately strong but not infinite: if
+      # rotation is genuinely the only option DWB can still pick it, and T4's
+      # criterion is that it does NOT. Re-tune against the T4 /cmd_vel log.
 
 local_costmap:
   local_costmap:
@@ -162,7 +220,7 @@ local_costmap:
       # point-cloud path stalls or the height band is wrong, the flat scan still
       # marks obstacles. A single perception path with no fallback is how a
       # costmap ends up confidently empty.
-      plugins: ["voxel_layer", "obstacle_layer", "inflation_layer"]
+      plugins: ["obstacle_layer", "inflation_layer"]   # voxel OFF -- see header
 
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
@@ -265,7 +323,7 @@ global_costmap:
       # point-cloud path stalls or the height band is wrong, the flat scan still
       # marks obstacles. A single perception path with no fallback is how a
       # costmap ends up confidently empty.
-      plugins: ["voxel_layer", "obstacle_layer", "inflation_layer"]
+      plugins: ["obstacle_layer", "inflation_layer"]   # voxel OFF -- see header
 
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"
@@ -371,8 +429,8 @@ velocity_smoother:
     feedback: "OPEN_LOOP"
     # Publishes geometry_msgs/Twist on /cmd_vel, which is exactly what
     # autonav_mode subscribes to -- no adapter needed on Nav2 1.3.12.
-    max_velocity: [0.25, 0.0, 0.5]
-    min_velocity: [0.0, 0.0, -0.5]     # x floor 0.0 => reverse stays forbidden
+    max_velocity: [0.35, 0.0, 1.0]   # must track max_vel_x or the smoother clamps it back
+    min_velocity: [0.0, 0.0, -1.0]     # x floor 0.0 => reverse stays forbidden
     max_accel: [0.5, 0.0, 1.0]
     max_decel: [-0.5, 0.0, -1.0]
     odom_topic: "/odom"

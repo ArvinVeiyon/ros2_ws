@@ -33,7 +33,10 @@ GAP_S = 0.8          # quiet time that ends a burst
 # Firmware constants for the open-vs-closed loop prediction below. Chain is
 # DifferentialRateControl.cpp -> RoverControl::rateControl (RoverControl.cpp:163).
 RD_WHEEL_TRACK = 0.31      # m, read live from the FC 2026-08-01
-RO_MAX_THR_SPEED = 3.0     # m/s, read live from the FC 2026-08-01
+RO_MAX_THR_SPEED = 4.93    # m/s, READ LIVE FROM THE FC 2026-09-19. Was hardcoded 3.0,
+                           # which is stale twice over: the value was 0.6 through August and
+                           # G2 set it to 4.93 on 09-13. It only feeds the open-vs-closed
+                           # prediction below, but a wrong number in the output gets quoted.
 
 
 

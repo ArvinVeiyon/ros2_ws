@@ -153,15 +153,33 @@ number** — it tells you when the value stops being valid.
 ### PX4 rover parameters
 
 ```
-RO_YAW_RATE_P     0.08        RO_MAX_THR_SPEED   0.6    m/s
+READ OFF THE FC 2026-09-19:
+RO_YAW_RATE_P     0.08        RO_MAX_THR_SPEED   4.93   m/s   <- was 0.6 until G2 (09-13)
 RO_YAW_RATE_I     0.0         RO_YAW_P           2.0
-RO_YAW_RATE_CORR  1.8         RO_SPEED_LIM       0.70   m/s
-RO_YAW_RATE_LIM   85.9        ⚠ deg/s, NOT rad/s
+RO_YAW_RATE_CORR  1.8         RD_WHEEL_TRACK     0.31   m
+RO_YAW_RATE_LIM   85.9        ⚠ deg/s, NOT rad/s  (= 1.4993 rad/s)
 ```
 
 > 🔴 **`RO_YAW_RATE_I = 0` is deliberate.** Integral windup was one of the two causes of the yaw
 > problem. **Never restore it to 0.1.** Re-read all of these off the FC after every reboot —
 > `tools/set_param.py NAME` reads and writes over MAVLink and refuses while armed.
+
+> 🔴🔴 **2026-09-19 — `RO_MAX_THR_SPEED` IS A SHARED DIVISOR, AND IT SILENTLY DETUNED THE YAW AXIS.**
+> The feedforward is `FF = sp × track/2 × RO_YAW_RATE_CORR / RO_MAX_THR_SPEED`, so **the FF gain is
+> the RATIO `CORR / RO_MAX_THR_SPEED`.** The yaw tune was validated 08-02 at **1.8 / 0.60 = 3.00**.
+> G2 moved the divisor to **4.93** on 09-13 and nothing touched `CORR`, so the live ratio is
+> **1.8 / 4.93 = 0.365 — 8.22× too small.**
+> ⇒ At every rate Nav2 can ask for, FF lands **inside the measured friction deadband** (`steer < ~0.45`
+> produces NO rotation; minimum achievable yaw is **~0.67 rad/s** — `rover_yaw_response.md`). Even
+> with the P term at full error the output reaches only ~0.20. **THE ROVER CANNOT ROTATE IN AUTONAV
+> AS IT STANDS.** T2 never caught this because T2 drives in a straight line.
+> ⏭ **PENDING, OPERATOR-APPROVED FOR THE NEXT FLOOR SESSION: `RO_YAW_RATE_CORR` 1.8 → 14.8**
+> (14.8 / 4.93 = 3.0020, i.e. the 08-02 ratio restored to 0.07%; param max is 10000, so it is well in
+> bounds). Write it **disarmed**, then verify. ⛔ **Do NOT "fix" this by restoring `RO_YAW_RATE_I`** —
+> that is the windup path that produced the 21× runaway. With I = 0 the loop is bounded: worst case
+> at the executor's 1.0 rad/s clamp is 0.545 steer ⇒ ~1.10 rad/s achieved.
+> ⚠️ **Same arithmetic applies to anything else scaled by `RO_MAX_THR_SPEED`** — check the ratio, not
+> the gain, whenever that divisor moves.
 
 ---
 
@@ -589,11 +607,38 @@ as evidence the bound was cleared:
 reflex on a clear corridor is the T2 pass criterion; it is **not** evidence the reflex works at speed.
 ⇒ **Still run `collision_standoff_test.py` before relying on the reflex above crawl.**
 
-🔴 **AND THE STOP DISTANCE AT `RO_DECEL_LIM`=5 REMAINS UNMEASURED** — the 09-14 open item. Three
-full-rate runs (~26,000 `esc_status` samples at ~97 Hz) scored **0 stop events**, twice for want of
-speed and once because `brake_fullrate.py` arms on *mean* wheel speed **>300 rpm** and 0.75 m/s only
-reaches ~270. 🔑🔑 **AND WHEEL RPM CANNOT MEASURE IT ANYWAY** — see §13b. The reflex's 0.69 m
-clearance is still sized against a 0.19 m stop measured at `RO_DECEL_LIM` **−1**, not the 5 in force.
+### ✅ 2026-09-18 — `RO_DECEL_LIM`=5 IS CLOSED BY ARITHMETIC. ⛔ DO NOT SCHEDULE A FLOOR RUN FOR IT.
+
+This was carried as an open item from 09-14 ("stop distance at `RO_DECEL_LIM`=5 unmeasured"). It is
+**not a blocker, and it never needed a tape** — the formula to close it was already in §5. Params
+read live off the FC 2026-09-18: `RO_DECEL_LIM` **5.0** · `RO_MAX_THR_SPEED` **4.93** ·
+`RO_ACCEL_LIM` **−1.0**.
+
+Decel slew = `RO_DECEL_LIM / RO_MAX_THR_SPEED` = 5 / 4.93 = **1.01 /s** of normalised throttle.
+
+| speed | normalised throttle | slew time to 0 | distance during slew |
+|---|---|---|---|
+| 0.75 m/s | 0.152 | 0.150 s | **0.057 m** |
+| 0.25 m/s | 0.051 | 0.050 s | **0.006 m** |
+
+🔑🔑 **THE DIVISOR IS THE WHOLE STORY.** The 08-14 wall hit was decel 0.5 ÷ `RO_MAX_THR_SPEED`
+**0.60** = 0.833 /s against a *saturated* stick ⇒ 1.2 s and ~0.54 m of powered travel. The divisor
+has since moved **8×** (0.60→4.93) and AutoNav runs at a fraction of the cap, so the term that was
+half a metre is now **six centimetres**. Stacked on the measured 0.19 m stop, worst case at
+0.75 m/s is **~0.25 m against the reflex's 0.69 m clearance** — margin, not risk. ⚠️ The 0.19 m was
+taken at `RO_DECEL_LIM` −1 under stick with regen cut on a charged pack, so call it pessimistic;
+even doubling it stays inside 0.69 m.
+
+🔑 **The arithmetic, the table and the low-stick conclusion were already written on 09-14** —
+→ `memory/reference_px4_rover_control_scope.md` §RAMP ARITHMETIC. Check there before measuring.
+
+🔎 **Still genuinely open, and NOT this item** — don't let them merge again:
+- the **≥300 mm reflex standoff above ~0.11 m/s** (the paragraph above; needs `collision_standoff_test.py`)
+- the **hard neutral brake** (`esc_config_audit`) — three full-rate runs (~26,000 `esc_status`
+  samples at ~97 Hz) scored **0 stop events**, twice for want of speed and once because
+  `brake_fullrate.py` arms on *mean* wheel speed **>300 rpm** while 0.75 m/s only reaches ~270.
+  🔑🔑 **AND WHEEL RPM CANNOT MEASURE A STOP ANYWAY — see §13b.** That one needs an independent
+  ruler (`/scan` against a wall, or tape).
 
 ### 🔴🔴 13b. THE END-OF-STOP SPEED SIGNAL IS NON-PHYSICAL — DO NOT DERIVE DECELERATION FROM IT
 
