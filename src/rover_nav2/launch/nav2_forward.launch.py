@@ -14,7 +14,10 @@ Assumes already running (systemd): rover-camera, rover-scan, rover-odometry,
 rover-autonav-mode. rover-ekf-bridge must be started BY HAND and only with the
 wheels on the floor.
 
-    ros2 launch rover_nav2 nav2_forward.launch.py
+    ros2 launch rover_nav2 nav2_forward.launch.py     # loads nav2_forward_flat.yaml
+
+The voxel development config (NOT for armed runs) needs an explicit
+params_file:=<share>/rover_nav2/config/nav2_forward.yaml.
 """
 
 import os
@@ -28,7 +31,9 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     pkg = get_package_share_directory('rover_nav2')
-    default_params = os.path.join(pkg, 'config', 'nav2_forward.yaml')
+    # The ARMED config is the default. nav2_forward.yaml (voxel layer ON) commanded
+    # a sustained max-rate spin on 2026-09-17; it must be asked for by name.
+    default_params = os.path.join(pkg, 'config', 'nav2_forward_flat.yaml')
 
     params_file = LaunchConfiguration('params_file')
     use_sim_time = LaunchConfiguration('use_sim_time')

@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 
 static const std::string kModeName = "AutoNav";
 
@@ -135,25 +136,68 @@ class AutoNavMode : public px4_ros2::ModeBase {
     _rover_setpoint = std::make_shared<px4_ros2::RoverSpeedRateSetpointType>(*this);
 
     // --- reflex collision-stop parameters ---
-    _collision_enabled = node.declare_parameter<bool>("collision.enabled", true);
-    _stop_distance = node.declare_parameter<double>("collision.stop_distance", kStopDistance);
-    _clear_distance = node.declare_parameter<double>("collision.clear_distance", kClearDistance);
-    _sector_half = node.declare_parameter<double>("collision.sector_half_angle", kSectorHalfAngle);
-    _corridor_half_width = node.declare_parameter<double>("collision.corridor_half_width", kCorridorHalfWidth);
-    _scan_timeout = node.declare_parameter<double>("collision.scan_timeout", kScanTimeout);
-    _min_valid_fraction = node.declare_parameter<double>("collision.min_valid_fraction", kMinValidFraction);
-    _front_overhang = node.declare_parameter<double>("collision.front_overhang", kFrontOverhang);
-    _footprint_front = node.declare_parameter<double>("collision.footprint_front", kFootprintFront);
-    _footprint_half_width = node.declare_parameter<double>("collision.footprint_half_width", kFootprintHalfWidth);
-    _footprint_margin = node.declare_parameter<double>("collision.footprint_margin", kFootprintMargin);
-    _blocked_yaw_rate = node.declare_parameter<double>("collision.blocked_yaw_rate", kBlockedYawRate);
+    // All READ-ONLY and range-checked. They are read once, here, so a later
+    // `ros2 param set` used to report success while the old value stayed active --
+    // an operator tuning on the floor was told 0.6 and got 0.35. Now it is refused.
+    // An out-of-range override at launch throws, so the node never starts on a
+    // value that silently disables the reflex (e.g. min_valid_fraction 0).
+    _collision_enabled = node.declare_parameter<bool>("collision.enabled", true, readOnly());
+    _stop_distance = node.declare_parameter<double>("collision.stop_distance", kStopDistance,
+        readOnly(0.10, 1.50));
+    _clear_distance = node.declare_parameter<double>("collision.clear_distance", kClearDistance,
+        readOnly(0.10, 2.00));
+    _sector_half = node.declare_parameter<double>("collision.sector_half_angle", kSectorHalfAngle,
+        readOnly(0.05, 1.57));
+    // Floor is the body half-width: a narrower corridor would miss obstacles in the path.
+    _corridor_half_width = node.declare_parameter<double>("collision.corridor_half_width",
+        kCorridorHalfWidth, readOnly(kFootprintHalfWidth, 0.60));
+    _scan_timeout = node.declare_parameter<double>("collision.scan_timeout", kScanTimeout,
+        readOnly(0.05, 1.00));
+    _min_valid_fraction = node.declare_parameter<double>("collision.min_valid_fraction",
+        kMinValidFraction, readOnly(0.10, 0.95));
+    _front_overhang = node.declare_parameter<double>("collision.front_overhang", kFrontOverhang,
+        readOnly(0.0, 0.60));
+    _footprint_front = node.declare_parameter<double>("collision.footprint_front", kFootprintFront,
+        readOnly(0.0, 0.60));
+    _footprint_half_width = node.declare_parameter<double>("collision.footprint_half_width",
+        kFootprintHalfWidth, readOnly(0.10, 0.40));
+    _footprint_margin = node.declare_parameter<double>("collision.footprint_margin", kFootprintMargin,
+        readOnly(0.0, 0.15));
+    _blocked_yaw_rate = node.declare_parameter<double>("collision.blocked_yaw_rate", kBlockedYawRate,
+        readOnly(0.0, 1.00));
     // When /scan is stale/absent: true = fail-safe (block forward, no blind driving),
     // false = permit forward with no perception (drivetrain-only bench runs).
-    _require_scan = node.declare_parameter<bool>("collision.require_scan", true);
+    _require_scan = node.declare_parameter<bool>("collision.require_scan", true, readOnly());
+
+    // Cross-parameter checks a per-value range cannot express.
+    if (!(_stop_distance < _clear_distance)) {
+      throw std::invalid_argument(
+          "collision.stop_distance must be < collision.clear_distance (hysteresis would vanish)");
+    }
+    if (!(_corridor_half_width >= _footprint_half_width)) {
+      throw std::invalid_argument(
+          "collision.corridor_half_width must be >= collision.footprint_half_width");
+    }
+    if (!_collision_enabled || !_require_scan) {
+      RCLCPP_WARN(_node.get_logger(),
+          "⚠️ collision reflex WEAKENED: enabled=%s require_scan=%s -- bench use only",
+          _collision_enabled ? "true" : "false", _require_scan ? "true" : "false");
+    }
 
     _cmd_vel_sub = node.create_subscription<geometry_msgs::msg::Twist>(
         "/cmd_vel", rclcpp::QoS(1),
         [this](geometry_msgs::msg::Twist::UniquePtr msg) {
+          // NaN must be caught BEFORE clamp: std::clamp(NaN) returns NaN, and NaN fails
+          // every comparison in the reflex (`speed > 0`, `abs(yaw) > cap`), so it would
+          // reach PX4 untouched. A non-finite command is treated as a fresh STOP.
+          if (!std::isfinite(msg->linear.x) || !std::isfinite(msg->angular.z)) {
+            _speed = 0.f;
+            _yaw_rate = 0.f;
+            _last_cmd_time = _node.get_clock()->now();
+            RCLCPP_WARN_THROTTLE(_node.get_logger(), *_node.get_clock(), 1000,
+                "non-finite /cmd_vel (x=%f z=%f) -- holding zero", msg->linear.x, msg->angular.z);
+            return;
+          }
           _speed = std::clamp(static_cast<float>(msg->linear.x), -kMaxSpeed, kMaxSpeed);
           // FRAME CONVERSION, added 2026-09-19. ROS REP-103 is FLU: +angular.z is
           // counter-clockwise = LEFT. PX4 is FRD: +yaw rate is clockwise = RIGHT.
@@ -229,11 +273,17 @@ class AutoNavMode : public px4_ros2::ModeBase {
     float speed = cmd_fresh ? _speed : 0.f;
     float yaw_rate = cmd_fresh ? _yaw_rate : 0.f;
 
+    // Second NaN guard at the funnel itself, independent of where the value came from.
+    if (!std::isfinite(speed) || !std::isfinite(yaw_rate)) {
+      speed = 0.f;
+      yaw_rate = 0.f;
+    }
+
     // Reflex collision-stop. Evaluated every tick (not only when driving forward) so
     // the hysteresis state tracks reality continuously and yaw can be capped too.
     // Reverse always passes through so the vehicle can back off.
     if (_collision_enabled && forwardBlocked()) {
-      if (speed > 0.f) {
+      if (!(speed <= 0.f)) {  // written so that NaN, too, counts as forward and is zeroed
         RCLCPP_WARN_THROTTLE(_node.get_logger(), *_node.get_clock(), 1000,
             "collision-stop: forward blocked (bumper=%.2fm raw=%.2fm)",
             frontClearance(), _front_min_range);
@@ -254,6 +304,24 @@ class AutoNavMode : public px4_ros2::ModeBase {
   }
 
  private:
+  static rcl_interfaces::msg::ParameterDescriptor readOnly()
+  {
+    rcl_interfaces::msg::ParameterDescriptor d;
+    d.read_only = true;
+    return d;
+  }
+
+  static rcl_interfaces::msg::ParameterDescriptor readOnly(double lo, double hi)
+  {
+    auto d = readOnly();
+    rcl_interfaces::msg::FloatingPointRange range;
+    range.from_value = lo;
+    range.to_value = hi;
+    range.step = 0.0;
+    d.floating_point_range.push_back(range);
+    return d;
+  }
+
   // Nearest obstacle inside the CORRIDOR THE BODY WILL SWEEP.
   //
   // This used to test an angular sector, which is the wrong shape. The rover is
