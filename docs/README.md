@@ -1,5 +1,7 @@
 # Vind-Roz documentation — start here
 
+🎯 **[`autonav_goal.md`](autonav_goal.md) — the operator's AutoNav goal, 2026-11-10 (authoritative).** What AutoNav is and is not, the architecture decisions, and the order of work. Where another document disagrees, that one wins.
+
 **Two entry points cover most questions. Go deeper only when they point you there.**
 
 | | Document | Answers |
